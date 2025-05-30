@@ -51,8 +51,8 @@ public class MeshyTextTo3D {
                     "art_style": "%s",
                     "ai_model": "meshy-4",
                     "topology": "triangle",
-                    "target_polycount": 5000,
-                    "should_remesh": true,
+                    "target_polycount": 1000,
+                    "should_remesh": false,
                     "symmetry_mode": "off",
                     "moderation": false
                 }
@@ -204,7 +204,15 @@ public class MeshyTextTo3D {
         }
     }
 
+    /**
+     * 스트리밍 API를 통해 태스크 진행 상황을 모니터링합니다.
+     * 주의: 타임아웃이 발생할 수 있으니 긴 작업에는 폴링 방식을 사용하는 것이 좋습니다.
+     * 
+     * @param taskId 모니터링할 태스크 ID
+     * @param callback 상태 변경 시 호출될 콜백
+     */
     public void streamTaskProgress(String taskId, TaskProgressCallback callback) {
+        System.out.println("[INFO] 스트리밍 API로 태스크 진행 상황 모니터링 시작: " + taskId);
         Request request = buildStreamRequest(taskId);
         client.newCall(request).enqueue(new TaskStreamCallback(callback));
     }
@@ -218,7 +226,10 @@ public class MeshyTextTo3D {
                 .build();
     }
 
-    private class TaskStreamCallback implements Callback {
+            /**
+             * 스트리밍 API 응답을 처리하는 콜백 클래스
+             */
+            private class TaskStreamCallback implements Callback {
         private final TaskProgressCallback userCallback;
 
         public TaskStreamCallback(TaskProgressCallback userCallback) {
@@ -227,17 +238,25 @@ public class MeshyTextTo3D {
 
         @Override
         public void onFailure(@NotNull Call call, @NotNull IOException e) {
+            System.err.println("[ERROR] 스트리밍 API 요청 실패: " + e.getMessage());
             userCallback.onError(e);
         }
 
         @Override
         public void onResponse(@NotNull Call call, @NotNull Response response) throws IOException {
             if (!response.isSuccessful()) {
+                System.err.println("[ERROR] 스트리밍 API 응답 오류: " + response.code());
                 userCallback.onError(new IOException("Unexpected code " + response));
                 return;
             }
 
-            processStreamResponse(response);
+            // 스트리밍 응답 처리 시도
+            try {
+                processStreamResponse(response);
+            } catch (Exception e) {
+                System.err.println("[ERROR] 스트리밍 응답 처리 중 오류: " + e.getMessage());
+                userCallback.onError(e);
+            }
         }
 
         private void processStreamResponse(@NotNull Response response) throws IOException {
@@ -251,26 +270,18 @@ public class MeshyTextTo3D {
                     new InputStreamReader(responseBody.byteStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    processStreamLine(line);
+                    if (line.startsWith("data: ")) {
+                        String data = line.substring(6);
+                        TaskStatus status = parseTaskStatus(data);
+                        userCallback.onProgress(status);
+
+                        // 작업이 완료되었으면 스트림 처리 중단
+                        if ("SUCCEEDED".equals(status.status) || "FAILED".equals(status.status)) {
+                            break;
+                        }
+                    }
                 }
             }
-        }
-
-        private void processStreamLine(@NotNull String line) {
-            if (line.startsWith("data: ")) {
-                String data = line.substring(6);
-                TaskStatus status = parseTaskStatus(data);
-                userCallback.onProgress(status);
-
-                if (isTaskCompleted(status)) {
-                    // 작업이 완료되었으므로 스트림 처리 중단
-                    return;
-                }
-            }
-        }
-
-        private boolean isTaskCompleted(@NotNull TaskStatus status) {
-            return "SUCCEEDED".equals(status.status) || "FAILED".equals(status.status);
         }
     }
 

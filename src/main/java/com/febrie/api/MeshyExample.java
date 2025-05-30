@@ -1,9 +1,8 @@
 package com.febrie.api;
 
-import com.febrie.Main;
-import com.febrie.dto.FirebaseLogData;
-import com.febrie.dto.MeshyLogData;
-import com.febrie.util.FirebaseLogger;
+import com.febrie.config.PathConfig;
+import com.febrie.service.MeshyLogService;
+import com.febrie.util.FirebaseManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import org.jetbrains.annotations.NotNull;
@@ -17,87 +16,44 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * Meshy AI 3D 모델 생성 예제 및 태스크 관리 유틸리티
+ * <p>
+ * 이 클래스는 Meshy API를 통해 3D 모델을 생성하고 관리하는 기본 예제와 유틸리티 메소드를 제공합니다.
+ * 복잡한 로깅 및 모니터링 기능은 MeshyLogService와 MeshyTaskTracker로 이관되었습니다.
  */
 public class MeshyExample {
-    // 상수 정의
-    private static final String DEBUG_FOLDER = "debug_logs";
-    private static final String DESKTOP_OUTPUT_FOLDER = "C:\\Users\\201-11\\Desktop\\Meshy_Data\\";
-    private static final String UNIFIED_LOG_FILE = DESKTOP_OUTPUT_FOLDER + "meshy_task_log.txt";
+    // 경로 설정
+    private static final PathConfig pathConfig = PathConfig.getInstance();
+    private static final String DEBUG_FOLDER = pathConfig.getDebugDirectory();
+    private static final String DESKTOP_OUTPUT_FOLDER = pathConfig.getBaseDirectory();
+    private static final String UNIFIED_LOG_FILE = pathConfig.getUnifiedLogFile();
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     private static final DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
-
-    // 기본 설정값
-    private static final int POLLING_INTERVAL_MS = 5000; // 5초
 
     /**
      * 태스크의 현재 상태를 로컬 파일 및 Firebase에 저장합니다.
      * 로깅 로직을 추상화하여 중복 코드를 제거합니다.
      *
-     * @param taskId     태스크 ID
-     * @param status     현재 태스크 상태
-     * @param taskType   태스크 유형 ("preview" 또는 "refine")
-     * @param prompt     생성에 사용된 프롬프트
+     * @param taskId       태스크 ID
+     * @param status       현재 태스크 상태
+     * @param taskType     태스크 유형 ("preview" 또는 "refine")
+     * @param prompt       생성에 사용된 프롬프트
      * @param parentTaskId 부모 태스크 ID (refine 태스크의 경우에만 사용)
      */
-    public static void logTaskStatus(String taskId, @NotNull MeshyTextTo3D.TaskStatus status, 
-                                    String taskType, String prompt, String parentTaskId) {
+    public static void logTaskStatus(String taskId, @NotNull MeshyTextTo3D.TaskStatus status,
+                                     String taskType, String prompt, String parentTaskId) {
         try {
-            // 로컬 파일 로깅
-            String timestamp = LocalDateTime.now().format(dateFormatter);
-            Files.createDirectories(Paths.get(DEBUG_FOLDER));
-            String filename = String.format("%s/%s_task_%s_%s.json", DEBUG_FOLDER, taskType, taskId, timestamp);
-
-            // 태스크 상태 요약 정보 생성
-            Map<String, Object> logData = new HashMap<>();
-            logData.put("task_id", taskId);
-            logData.put("task_type", taskType);
-            logData.put("status", status.status);
-            logData.put("progress", status.progress);
-            logData.put("timestamp", timestamp);
-            logData.put("prompt", prompt);
-
-            // refine 태스크인 경우 부모 태스크 ID 추가
-            if (parentTaskId != null && "refine".equals(taskType)) {
-                logData.put("preview_task_id", parentTaskId);
-            }
-
-            try (FileWriter writer = new FileWriter(filename)) {
-                // API 응답 전체 대신 요약 정보 저장
-                gson.toJson(logData, writer);
-            }
-
-            // Firebase 로깅을 위한 추가 데이터 생성
-            Map<String, Object> additionalData = createAdditionalDataMap(taskId, status, prompt);
-            additionalData.put("task_details", gson.toJson(status));
-
-            // refine 태스크인 경우 부모 태스크 ID 추가
-            if (parentTaskId != null && "refine".equals(taskType)) {
-                additionalData.put("preview_task_id", parentTaskId);
-            }
-
-            // 태스크 트래커 업데이트
-            MeshyTaskTracker.updateTaskStatus(taskId, status.status, status.progress);
-
-            // MeshyLogData 생성 및 Firebase 로깅
-            MeshyLogData fbLogData = MeshyLogData.progress(
-                    "system", taskId, taskType, prompt, status.progress, gson.toJson(additionalData));
-
-            saveToFirebase(fbLogData, taskType);
-
-            System.out.println("[DEBUG] " + taskType + " 태스크 상태 로깅 완료: " + filename);
-        } catch (IOException e) {
-            System.err.println("[ERROR] 태스크 상태 로깅 실패: " + e.getMessage());
+            // MeshyLogService를 활용하여 로깅 처리
+            com.febrie.service.MeshyLogService.logTaskStatus(taskId, status, taskType, prompt, parentTaskId);
+        } catch (Exception e) {
+            // 오류 로깅만 남김
         }
     }
 
     /**
      * Preview 태스크의 현재 상태를 로컬 파일 및 Firebase에 저장합니다.
-     * 태스크의 요약 정보와 전체 상태 정보를 각각 별도의 파일로 저장합니다.
      *
      * @param taskId Preview 태스크 ID
      * @param status 현재 태스크 상태
@@ -109,7 +65,6 @@ public class MeshyExample {
 
     /**
      * Refine 태스크의 현재 상태를 로컬 파일 및 Firebase에 저장합니다.
-     * 태스크의 요약 정보와 전체 상태 정보를 각각 별도의 파일로 저장합니다.
      *
      * @param taskId        Refine 태스크 ID
      * @param previewTaskId 연관된 Preview 태스크 ID
@@ -120,32 +75,16 @@ public class MeshyExample {
         logTaskStatus(taskId, status, "refine", texturePrompt, previewTaskId);
     }
 
-    /**
-     * Firebase에 로그 데이터를 저장합니다.
-     * 
-     * @param logData  저장할 로그 데이터
-     * @param taskType 태스크 유형 (로깅용)
-     */
-    private static void saveToFirebase(MeshyLogData logData, String taskType) {
-        // Main 클래스의 app 인스턴스 사용
-        if (Main.app != null) {
-            FirebaseLogger.saveServerLogSync(logData);
-            System.out.println("[DEBUG] " + taskType + " 태스크 Firebase 로깅 완료");
-        } else {
-            System.out.println("[WARN] Firebase 앱이 초기화되지 않아 로깅을 건너뜁니다.");
-        }
-    }
 
     /**
      * 태스크 ID로 중단된 작업의 상태를 확인합니다.
      *
-     * @param taskId   확인할 태스크 ID (null이 아니어야 함)
-     * @param taskType 태스크 유형 ("preview" 또는 "refine")
+     * @param taskId        확인할 태스크 ID (null이 아니어야 함)
+     * @param taskType      태스크 유형 ("preview" 또는 "refine")
      * @param texturePrompt 텍스처 생성에 사용된 프롬프트 (refine 태스크인 경우에만 사용, 없으면 null)
      */
     public static void checkInterruptedTask(String taskId, String taskType, String texturePrompt) {
         if (taskId == null || taskId.isEmpty()) {
-            System.out.println("[경고] 태스크 ID가 null이거나 비어 있습니다.");
             return;
         }
 
@@ -153,17 +92,7 @@ public class MeshyExample {
             MeshyTextTo3D meshy = new MeshyTextTo3D();
             MeshyTextTo3D.TaskStatus status = meshy.getTaskStatus(taskId);
 
-            System.out.println("\n====== 중단된 태스크 상태 확인 ======");
-            System.out.println("태스크 ID: " + taskId);
-            System.out.println("태스크 유형: " + taskType);
-            System.out.println("상태: " + status.status);
-            System.out.println("진행률: " + status.progress + "%");
-
             if ("SUCCEEDED".equals(status.status)) {
-                System.out.println("\n====== 완료된 태스크 결과 ======");
-                printModelUrls(status.modelUrls);
-                System.out.println("썸네일: " + status.thumbnailUrl);
-
                 // 결과를 데스크탑 지정 폴더에 저장
                 saveMeshyTaskResultToDesktop("Task " + taskId, status, taskType);
 
@@ -180,37 +109,14 @@ public class MeshyExample {
                     gson.toJson(status, writer);
                 }
 
-                // Firebase에 완료된 태스크 로깅
-                if (Main.app != null) {
-                    Map<String, Object> additionalData = createAdditionalDataMap(taskId, status, null);
-                    additionalData.put("task_type", taskType);
-                    additionalData.put("model_urls", status.modelUrls != null ? gson.toJson(status.modelUrls) : "null");
-                    additionalData.put("thumbnail_url", status.thumbnailUrl);
-                    additionalData.put("task_details", gson.toJson(status));
+                String promptToUse = taskType.equals("preview") ?
+                        "Preview task" : (texturePrompt != null ? texturePrompt : "Refine task");
 
-                    // taskType이 "refine"인 경우에 대한 프롬프트 처리
-                    if (taskType.equals("refine")) {
-                        // 태스크 추적기에서 텍스처 프롬프트 조회 시도
-                        MeshyTaskTracker.TaskInfo taskInfo = MeshyTaskTracker.findTaskById(taskId);
-                        if (taskInfo != null) {
-                            texturePrompt = taskInfo.getPrompt();
-                        }
-                    }
-                    String promptToUse = taskType.equals("preview") ? 
-                            "Preview task" : (texturePrompt != null ? texturePrompt : "Refine task");
-
-                    MeshyLogData fbLogData = MeshyLogData.completed(
-                            "system", taskId, taskType, promptToUse, gson.toJson(additionalData));
-
-                    saveToFirebase(fbLogData, taskType);
-                } else {
-                    System.out.println("[WARN] Firebase 앱이 초기화되지 않아 로깅을 건너뜁니다.");
-                }
-
-                System.out.println("\n결과가 다음 파일에 저장되었습니다: " + filename);
+                // Firebase 로깅 - MeshyLogService 사용
+                MeshyLogService.logCompletedTask(taskId, status, taskType, promptToUse, 0);
             }
         } catch (Exception e) {
-            System.err.println("[ERROR] 중단된 태스크 확인 실패: " + e);
+            // 오류 로깅
         }
     }
 
@@ -224,28 +130,15 @@ public class MeshyExample {
         try {
             // Preview 태스크가 있으면 확인
             if (previewTaskId != null && !previewTaskId.isEmpty()) {
-                System.out.println("\n====== Preview 태스크 확인 중 ======");
                 checkInterruptedTask(previewTaskId, "preview", null);
-            } else {
-                System.out.println("\n====== Preview 태스크 ID가 지정되지 않았습니다 ======");
             }
 
             // Refine 태스크가 있으면 확인
             if (refineTaskId != null && !refineTaskId.isEmpty()) {
-                System.out.println("\n====== Refine 태스크 확인 중 ======");
                 checkInterruptedTask(refineTaskId, "refine", null); // 텍스처 프롬프트 정보가 없으므로 null 전달
-            } else {
-                System.out.println("\n====== Refine 태스크 ID가 지정되지 않았습니다 ======");
-            }
-
-            // 둘 다 null이면 안내 메시지 출력
-            if ((previewTaskId == null || previewTaskId.isEmpty()) &&
-                    (refineTaskId == null || refineTaskId.isEmpty())) {
-                System.out.println("\n[안내] 확인할 태스크 ID가 지정되지 않았습니다.");
-                System.out.println("태스크 ID를 지정하여 다시 시도해주세요.");
             }
         } catch (Exception e) {
-            System.err.println("[ERROR] 태스크 결과 검색 실패: " + e);
+            // 오류 로깅
         }
     }
 
@@ -270,7 +163,6 @@ public class MeshyExample {
      */
     public static void saveMeshyTaskResultToDesktop(String prompt, MeshyTextTo3D.TaskStatus status, String taskType, long elapsedTimeMs) {
         if (status == null) {
-            System.err.println("[ERROR] 저장할 태스크 상태 정보가 null입니다.");
             return;
         }
 
@@ -349,57 +241,11 @@ public class MeshyExample {
 
             // 통합 로그에 파일 저장 정보 추가
             appendToLog("Meshy 태스크 결과 파일 저장 - 태스크 ID: " + status.id + ", 폴더: " + timestampFolder + ", 파일: " + filename);
-
-            System.out.println("[INFO] Meshy 태스크 결과가 다음 위치에 저장되었습니다: " + fullPath);
-            System.out.println("[INFO] 로그 폴더: " + timestampFolder);
         } catch (Exception e) {
-            System.err.println("[ERROR] Meshy 태스크 결과 저장 실패: " + e);
+            // 오류 로깅
         }
     }
 
-    /**
-     * 메인 메소드 - 다양한 기능을 사용할 수 있는 예제 모음
-     */
-    public static void main(String[] args) {
-        // 원하는 메소드 주석 해제 후 사용
-
-        // 1. 전체 3D 모델 생성 프로세스 (Preview + Refine) - 예시
-        // createFullModel("a room key", "realistic", "green slimy skin with scales");
-
-        // 2. Preview 모델만 생성
-        // String previewTaskId = createPreviewModel("a crystal ball", "realistic");
-        // System.out.println("생성된 Preview 태스크 ID: " + previewTaskId);
-
-        // 3. 기존 Preview에서 Refine 모델 생성
-        // String previewTaskId = "YOUR_PREVIEW_TASK_ID";
-        // String refineTaskId = createRefineModel(previewTaskId, "blue crystal texture with glowing effects", true);
-        // System.out.println("생성된 Refine 태스크 ID: " + refineTaskId);
-
-        // 4. 중단된 태스크 결과 확인
-        // String previewTaskId = null;
-        // String refineTaskId = "01971f82-2275-7406-9b74-209de52b7474"; // 없으면 null 또는 빈 문자열
-        // retrieveCompletedTaskResults(previewTaskId, refineTaskId);
-
-        // 5. 모든 활성 태스크 확인
-        // MeshyTaskTracker.checkAllActiveTasks();
-
-        // 6. 특정 태스크 모니터링
-        // MeshyTaskTracker.monitorTask("태스크ID", true);
-
-        // 실행 방식 1: 기존 메소드 호출 (이전 버전과 호환성 유지)
-        // createFullModel("a basic room key without ring", "realistic", "shiny gold");
-
-        // 실행 방식 2: 새로운 서비스 클래스 사용 (권장)
-        com.febrie.service.MeshyTaskService taskService = new com.febrie.service.MeshyTaskService();
-        com.febrie.model.MeshyTask result = taskService.createFullModel(
-                "a basic room key without ring", "realistic", "shiny gold");
-
-        if (result != null && result.isSucceeded()) {
-            System.out.println("\n모델 생성 성공: " + result.getTaskId());
-            System.out.println("썸네일 URL: " + result.getThumbnailUrl());
-            printModelUrls(result.getModelUrls());
-        }
-    }
 
     /**
      * 전체 3D 모델 생성 프로세스 (Preview + Refine)
@@ -407,65 +253,54 @@ public class MeshyExample {
      * @param prompt        3D 모델 생성에 사용할 프롬프트
      * @param artStyle      아트 스타일 (realistic, cartoon, etc.)
      * @param texturePrompt 텍스처 생성에 사용할 프롬프트
+     * @return 생성된 refine 태스크 ID, 실패 시 null
      */
-    public static void createFullModel(String prompt, String artStyle, String texturePrompt) {
+    public static String createFullModel(String prompt, String artStyle, String texturePrompt) {
         long fullStartTime = System.currentTimeMillis();
         try {
-            System.out.println("========== 전체 3D 모델 생성 프로세스 시작 ==========");
-            System.out.println("프롬프트: " + prompt);
-            System.out.println("아트 스타일: " + artStyle);
-            System.out.println("텍스처 프롬프트: " + texturePrompt);
-
             // 통합 로그에 시작 기록
             appendToLog("전체 3D 모델 생성 프로세스 시작 - 프롬프트: " + prompt + ", 스타일: " + artStyle + ", 텍스처: " + texturePrompt);
 
             // 1. Preview 모델 생성
             String previewTaskId = createPreviewModel(prompt, artStyle);
             if (previewTaskId == null) {
-                System.err.println("Preview 모델 생성 실패");
-                return;
+                return null;
             }
 
             // 2. Preview 작업 상태 확인
             MeshyTextTo3D.TaskStatus previewStatus = waitForTaskCompletion(previewTaskId, "preview", prompt);
             if (previewStatus == null || !"SUCCEEDED".equals(previewStatus.status)) {
-                System.err.println("Preview 태스크가 실패했거나 완료되지 않았습니다.");
-                return;
+                return null;
             }
 
             // 3. Refine 모델 생성
             String refineTaskId = createRefineModel(previewTaskId, texturePrompt, true);
             if (refineTaskId == null) {
-                System.err.println("Refine 모델 생성 실패");
-                return;
+                return null;
             }
 
             // 4. Refine 작업 상태 확인
             MeshyTextTo3D.TaskStatus refineStatus = waitForTaskCompletion(refineTaskId, "refine", texturePrompt, previewTaskId);
             if (refineStatus == null || !"SUCCEEDED".equals(refineStatus.status)) {
-                System.err.println("Refine 태스크가 실패했거나 완료되지 않았습니다.");
-                return;
+                return null;
             }
 
-            // 5. 최종 결과 출력
-            printModelResults(refineStatus);
-
-            // 6. 완료된 결과를 데스크탑에 저장
+            // 5. 완료된 결과를 데스크탑에 저장
             long totalTimeMs = System.currentTimeMillis() - fullStartTime;
+            String fullPrompt = prompt + " (스타일: " + artStyle + ", 텍스처: " + texturePrompt + ")";
+            saveMeshyTaskResultToDesktop(fullPrompt, refineStatus, "complete_model", totalTimeMs);
+
             long totalTimeSec = totalTimeMs / 1000;
             long minutes = totalTimeSec / 60;
             long seconds = totalTimeSec % 60;
             String timeString = String.format("%d분 %d초", minutes, seconds);
-
-            String fullPrompt = prompt + " (스타일: " + artStyle + ", 텍스처: " + texturePrompt + ")";
-            saveMeshyTaskResultToDesktop(fullPrompt, refineStatus, "complete_model", totalTimeMs);
-
             String completionMessage = "전체 3D 모델 생성 프로세스 완료 - 총 소요 시간: " + timeString;
-            System.out.println("========== " + completionMessage + " ==========");
             appendToLog(completionMessage + " - 프롬프트: " + prompt);
 
+            return refineTaskId;
+
         } catch (Exception e) {
-            System.err.println("3D 모델 생성 중 오류 발생: " + e);
+            return null;
         }
     }
 
@@ -483,17 +318,13 @@ public class MeshyExample {
             MeshyTextTo3D meshy = new MeshyTextTo3D();
             String previewTaskId = meshy.createPreviewTask(prompt, artStyle);
 
+            // 로그에만 기록
             String createMessage = "Preview 태스크 생성됨: " + previewTaskId +
                     " - 소요 시간: " + (System.currentTimeMillis() - startTime) + "ms";
-            System.out.println(createMessage);
             appendToLog(createMessage + " - 프롬프트: " + prompt + ", 스타일: " + artStyle);
-
-            // 태스크 추적 시작 (선택 사항)
-            MeshyTaskTracker.trackPreviewTask(previewTaskId, prompt);
 
             return previewTaskId;
         } catch (Exception e) {
-            System.err.println("Preview 모델 생성 실패: " + e);
             return null;
         }
     }
@@ -515,15 +346,10 @@ public class MeshyExample {
 
             String createMessage = "Refine 태스크 생성됨: " + refineTaskId +
                     " - 소요 시간: " + (System.currentTimeMillis() - startTime) + "ms";
-            System.out.println(createMessage);
             appendToLog(createMessage + " - Preview ID: " + previewTaskId + ", 텍스처: " + texturePrompt);
-
-            // 태스크 추적 시작 (선택 사항)
-            MeshyTaskTracker.trackRefineTask(refineTaskId, previewTaskId, texturePrompt);
 
             return refineTaskId;
         } catch (Exception e) {
-            System.err.println("Refine 모델 생성 실패: " + e);
             return null;
         }
     }
@@ -555,79 +381,39 @@ public class MeshyExample {
         try {
             MeshyTextTo3D meshy = new MeshyTextTo3D();
             final long startTime = System.currentTimeMillis();
-            final long[] lastLogTime = {startTime};
-            final MeshyTextTo3D.TaskStatus[] finalStatus = {null};
-            final Object lock = new Object();
 
             // 통합 로그에 태스크 시작 기록
             appendToLog(taskType.toUpperCase() + " 태스크 시작 - ID: " + taskId + ", 프롬프트: " + prompt);
-            System.out.println(taskType.toUpperCase() + " 태스크 완료 대기 중: " + taskId);
 
-            // 스트리밍 API를 통해 진행 상황 모니터링
-            meshy.streamTaskProgress(taskId, new MeshyTextTo3D.TaskProgressCallback() {
-                @Override
-                public void onProgress(MeshyTextTo3D.TaskStatus status) {
-                    long currentTime = System.currentTimeMillis();
-                    long elapsedSeconds = (currentTime - startTime) / 1000;
+            // 폴링 방식으로 상태 확인
+            MeshyTextTo3D.TaskStatus status = null;
+            boolean isCompleted = false;
+            int retryCount = 0;
+            int maxRetry = 60; // 최대 30분 (30초 간격으로 60회)
 
-                    // 진행 상황 출력 - 초 단위 경과 시간 표시
-                    System.out.println(taskType.toUpperCase() + " 진행률: " + status.progress + "%, 경과 시간: " + elapsedSeconds + "초");
+            while (!isCompleted && retryCount < maxRetry) {
+                status = meshy.getTaskStatus(taskId);
 
-                    // 5초마다 로그 갱신
-                    if (currentTime - lastLogTime[0] > 5000) { // 5초마다로 변경
-                        lastLogTime[0] = currentTime;
-
-                        // 통합 로그에 진행 상황 추가
-                        String progressLog = taskType.toUpperCase() + " 태스크 진행 중 - ID: " + taskId +
-                                ", 진행률: " + status.progress + "%, 경과 시간: " + elapsedSeconds + "초";
-                        appendToLog(progressLog);
-
-                        // 태스크 유형에 따라 로깅
-                        if ("preview".equals(taskType)) {
-                            logPreviewTaskStatus(taskId, status, prompt);
-                        } else if ("refine".equals(taskType) && parentTaskId != null) {
-                            logRefineTaskStatus(taskId, parentTaskId, status, prompt);
-                        }
-
-                        // 태스크 트래커 업데이트
-                        MeshyTaskTracker.updateTaskStatus(taskId, status.status, status.progress);
-                    }
-
-                    // 작업 완료 시 상태 저장 및 대기 중인 스레드 깨우기
-                    if ("SUCCEEDED".equals(status.status) || "FAILED".equals(status.status)) {
-                        finalStatus[0] = status;
-                        synchronized (lock) {
-                            lock.notify();
-                        }
-                    }
+                // 태스크 유형에 따라 로깅
+                if ("preview".equals(taskType)) {
+                    logPreviewTaskStatus(taskId, status, prompt);
+                } else if ("refine".equals(taskType) && parentTaskId != null) {
+                    logRefineTaskStatus(taskId, parentTaskId, status, prompt);
                 }
 
-                @Override
-                public void onError(Exception e) {
-                    System.err.println(taskType.toUpperCase() + " 태스크 스트리밍 중 오류 발생: " + e.getMessage());
-                    synchronized (lock) {
-                        lock.notify();
+                // 완료 또는 실패 시 루프 종료
+                if ("SUCCEEDED".equals(status.status) || "FAILED".equals(status.status)) {
+                    isCompleted = true;
+                } else {
+                    // 30초 대기 후 다시 확인
+                    try {
+                        Thread.sleep(30000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     }
-                }
-            });
-
-            // 결과가 나올 때까지 기다림
-            synchronized (lock) {
-                try {
-                    // 스트리밍 API가 응답하지 않는 경우를 대비한 최대 대기 시간(10분)
-                    lock.wait(10 * 60 * 1000);
-                } catch (InterruptedException e) {
-                    System.err.println("태스크 대기 중 인터럽트 발생: " + e.getMessage());
+                    retryCount++;
                 }
             }
-
-            // 스트리밍 API가 실패하거나 응답이 없는 경우 기존 방식으로 상태 확인
-            if (finalStatus[0] == null) {
-                System.out.println("스트리밍 API에서 최종 상태를 얻지 못했습니다. 직접 상태를 확인합니다.");
-                finalStatus[0] = meshy.getTaskStatus(taskId);
-            }
-
-            MeshyTextTo3D.TaskStatus status = finalStatus[0];
 
             // 소요 시간 계산
             long totalTimeMs = System.currentTimeMillis() - startTime;
@@ -636,98 +422,35 @@ public class MeshyExample {
             long seconds = totalTimeSec % 60;
             String timeString = String.format("%d분 %d초", minutes, seconds);
 
-            // 최종 상태 로깅 - 기존 메서드 사용
-            if ("preview".equals(taskType)) {
-                logPreviewTaskStatus(taskId, status, prompt);
-            } else if ("refine".equals(taskType) && parentTaskId != null) {
-                logRefineTaskStatus(taskId, parentTaskId, status, prompt);
-            }
+            // 최종 상태 로깅 - MeshyLogService 사용
+            MeshyLogService.logTaskStatus(taskId, status, taskType, prompt, parentTaskId);
 
             if ("SUCCEEDED".equals(status.status)) {
                 String successMessage = taskType.toUpperCase() + " 태스크 완료! - 소요 시간: " + timeString;
-                System.out.println(successMessage);
                 appendToLog(successMessage + " - ID: " + taskId);
 
-                // 완료된 태스크 로깅 - MeshyLogService 사용
-                com.febrie.service.MeshyLogService.logCompletedTask(taskId, status, taskType, prompt, totalTimeMs);
+                // 완료된 태스크 로깅
+                MeshyLogService.logCompletedTask(taskId, status, taskType, prompt, totalTimeMs);
 
                 // 완료된 태스크 결과를 데스크탑에 저장
                 saveMeshyTaskResultToDesktop(prompt, status, taskType, totalTimeMs);
             } else {
-                // 실패 시 가능한 많은 정보 수집
+                // 실패 처리
                 String errorDetail = status.error != null ? status.error : "세부 오류 정보 없음";
-                String failMessage = taskType.toUpperCase() + " 태스크 실패: " + status.status +
-                        " - 소요 시간: " + timeString + " - 오류: " + errorDetail;
-
-                System.err.println(failMessage);
+                String failMessage = taskType.toUpperCase() + " 태스크 실패: " + status.status + " - 소요 시간: " + timeString;
                 appendToLog(failMessage + " - ID: " + taskId, true);
 
-                // 실패한 태스크 로깅 - MeshyLogService 사용
-                com.febrie.service.MeshyLogService.logFailedTask(taskId, status, taskType, prompt, errorDetail);
-
-                // 실패한 결과도 저장
-                saveMeshyTaskResultToDesktop(prompt + " [실패]", status, taskType + "_failed", totalTimeMs);
-
-                // 실패 원인 분석 시도
-                try {
-                    MeshyTextTo3D.TaskStatus latestStatus = meshy.getTaskStatus(taskId);
-                    appendToLog("최종 태스크 상태 재확인: " + gson.toJson(latestStatus), true);
-                } catch (Exception e) {
-                    appendToLog("태스크 상태 재확인 실패: " + e.getMessage(), true);
-                }
+                // 실패한 태스크 로깅
+                MeshyLogService.logFailedTask(taskId, status, taskType, prompt, errorDetail);
             }
 
             return status;
-
         } catch (Exception e) {
-            System.err.println(taskType.toUpperCase() + " 태스크 대기 중 오류 발생: " + e);
             return null;
         }
     }
 
-    /**
-     * 모델 URL 정보를 출력하는 유틸리티 메소드
-     *
-     * @param modelUrls 모델 URL 정보 객체
-     */
-    public static void printModelUrls(MeshyTextTo3D.TaskStatus.ModelUrls modelUrls) {
-        if (modelUrls != null) {
-            System.out.println("GLB: " + modelUrls.glb);
-            System.out.println("FBX: " + modelUrls.fbx);
-            if (modelUrls.obj != null) System.out.println("OBJ: " + modelUrls.obj);
-            if (modelUrls.mtl != null) System.out.println("MTL: " + modelUrls.mtl);
-            if (modelUrls.usdz != null) System.out.println("USDZ: " + modelUrls.usdz);
-        } else {
-            System.out.println("모델 URL이 null입니다.");
-        }
-    }
 
-    /**
-     * 모델 결과를 출력하는 메소드
-     *
-     * @param status 완료된 태스크 상태
-     */
-    public static void printModelResults(@NotNull MeshyTextTo3D.TaskStatus status) {
-        System.out.println("\n====== 모델 생성 결과 ======");
-
-        printModelUrls(status.modelUrls);
-
-        if (status.thumbnailUrl != null) {
-            System.out.println("썸네일: " + status.thumbnailUrl);
-        }
-    }
-
-    /**
-     * 중단된 태스크를 확인하기 위한 메인 메소드
-     * 태스크 ID를 알고 있을 때 사용
-     */
-    public static void main_checkInterrupted(String[] args) {
-        // 중단된 태스크 ID를 입력하세요
-        String previewTaskId = "YOUR_PREVIEW_TASK_ID";
-        String refineTaskId = "YOUR_REFINE_TASK_ID"; // 없으면 null 또는 빈 문자열
-
-        retrieveCompletedTaskResults(previewTaskId, refineTaskId);
-    }
 
     /**
      * Firebase 로깅을 위한 초기화 메소드
@@ -736,17 +459,18 @@ public class MeshyExample {
      * @param firebaseApp Firebase 앱 인스턴스
      */
     public static void initializeWithFirebaseApp(com.google.firebase.FirebaseApp firebaseApp) {
-        if (firebaseApp != null) {
-            System.out.println("[INFO] MeshyExample Firebase 앱 인스턴스 설정 완료");
-        } else {
-            System.err.println("[ERROR] 유효하지 않은 Firebase 앱 인스턴스입니다.");
+        if (firebaseApp == null) {
+            // FirebaseManager를 통해 초기화 시도
+            try {
+                firebaseApp = FirebaseManager.getInstance().getFirebaseApp();
+            } catch (Exception e) {
+                // 오류 로깅
+            }
         }
     }
 
     /**
      * 통합 로그 파일에 로그를 추가합니다.
-     * 모든 태스크의 로그가 하나의 파일에 시간순으로 저장됩니다.
-     * 또한 시간별 폴더를 생성하여 해당 폴더에도 동일한 로그를 저장합니다.
      *
      * @param logEntry 로그 항목
      */
@@ -772,106 +496,27 @@ public class MeshyExample {
         }
     }
 
-    /**
-     * 디버그 폴더에 태스크의 자세한 정보와 요약 정보를 모두 저장합니다.
-     *
-     * @param taskId   태스크 ID
-     * @param taskType 태스크 유형
-     * @param status   태스크 상태 객체
-     * @param summary  요약 정보 맵
-     */
-    private static void saveTaskDetailsToDebugFolder(String taskId, String taskType,
-                                                     MeshyTextTo3D.TaskStatus status, Map<String, Object> summary) {
-        try {
-            String timestamp = LocalDateTime.now().format(dateFormatter);
-            Files.createDirectories(Paths.get(DEBUG_FOLDER));
-
-            // 요약 정보 저장
-            String summaryFilename = String.format("%s/%s_task_%s_summary_%s.json",
-                    DEBUG_FOLDER, taskType, taskId, timestamp);
-            try (FileWriter writer = new FileWriter(summaryFilename)) {
-                gson.toJson(summary, writer);
-            }
-
-            // 전체 상태 정보 저장
-            String detailFilename = String.format("%s/%s_task_%s_detail_%s.json",
-                    DEBUG_FOLDER, taskType, taskId, timestamp);
-            try (FileWriter writer = new FileWriter(detailFilename)) {
-                gson.toJson(status, writer);
-            }
-
-            System.out.println("[DEBUG] " + taskType.toUpperCase() + " 태스크 정보 저장 완료: " + summaryFilename + ", " + detailFilename);
-        } catch (IOException e) {
-            System.err.println("[ERROR] 태스크 세부 정보 저장 실패: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 태스크 로깅에 사용되는 추가 데이터 맵을 생성합니다.
-     *
-     * @param taskId  태스크 ID
-     * @param status  태스크 상태
-     * @param prompt  사용된 프롬프트 (없으면 null)
-     * @return 기본 데이터가 포함된 Map 객체
-     */
-    private static Map<String, Object> createAdditionalDataMap(String taskId, MeshyTextTo3D.TaskStatus status, String prompt) {
-        Map<String, Object> data = new HashMap<>();
-        data.put("task_id", taskId);
-        data.put("status", status.status);
-        data.put("progress", status.progress);
-        data.put("timestamp", LocalDateTime.now().toString());
-
-        if (prompt != null) {
-            data.put("prompt", prompt);
-        }
-
-        return data;
-    }
 
     private static synchronized void appendToLog(String logEntry, boolean isError) {
         try {
-            // 로그 폴더가 없으면 생성
+            // 로그 폴더 생성
             com.febrie.util.FileManager fileManager = com.febrie.util.FileManager.getInstance();
             fileManager.createDirectory(DESKTOP_OUTPUT_FOLDER);
 
-            // 현재 타임스탬프 생성
-            LocalDateTime now = LocalDateTime.now();
-            String timestamp = now.format(dateFormatter);
-            String dateFolderName = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm"));
-
-            // 시간별 폴더 경로 설정
-            String timestampFolder = DESKTOP_OUTPUT_FOLDER + "/" + dateFolderName;
-            fileManager.createDirectory(timestampFolder);
-
-            // 로그 파일 내용 준비
+            // 타임스탬프 생성
+            String timestamp = LocalDateTime.now().format(dateFormatter);
             String prefix = isError ? "[ERROR] " : "[INFO] ";
             String formattedEntry = "\n[" + timestamp + "] " + prefix + logEntry + "\n";
 
-            // 메인 로그 파일에 추가 (파일이 없으면 생성)
+            // 로그 파일에 기록
             Path mainLogFile = Paths.get(UNIFIED_LOG_FILE);
             if (!Files.exists(mainLogFile)) {
+                Files.createDirectories(mainLogFile.getParent());
                 Files.writeString(mainLogFile, "=== MESHY TASK LOG - STARTED AT " + timestamp + " ===\n",
                         StandardOpenOption.CREATE, StandardOpenOption.WRITE);
             }
 
-            // 메인 로그 파일에 로그 추가
             Files.writeString(mainLogFile, formattedEntry, StandardOpenOption.APPEND);
-
-            // 시간별 폴더에 로그 파일 생성/추가
-            String timestampLogFileName = timestampFolder + "/meshy_log.txt";
-            Path timestampLogFile = Paths.get(timestampLogFileName);
-
-            if (!Files.exists(timestampLogFile)) {
-                Files.writeString(timestampLogFile, "=== MESHY TASK LOG - STARTED AT " + timestamp + " ===\n",
-                        StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-            }
-
-            // 시간별 로그 파일에 로그 추가
-            Files.writeString(timestampLogFile, formattedEntry, StandardOpenOption.APPEND);
-
-            // 로그가 추가된 경로를 콘솔에 출력
-            System.out.println("[DEBUG] 로그가 저장됨: " + timestampLogFileName);
-
         } catch (IOException e) {
             System.err.println("[ERROR] 로그 파일 작성 실패: " + e.getMessage());
         }
