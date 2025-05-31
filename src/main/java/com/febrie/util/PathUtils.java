@@ -21,10 +21,18 @@ public class PathUtils {
 
     @NotNull
     public static Path toPath(String path) {
+        if (path == null) {
+            throw new IllegalArgumentException("경로가 null입니다.");
+        }
         return Paths.get(normalizePath(path));
     }
 
     public static void ensureDirectoryExists(String path) {
+        if (path == null) {
+            System.err.println("[ERROR] 디렉토리 경로가 null입니다.");
+            return;
+        }
+
         try {
             Path dirPath = toPath(path);
             if (!Files.exists(dirPath)) {
