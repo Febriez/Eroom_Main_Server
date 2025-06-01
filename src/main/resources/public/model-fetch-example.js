@@ -15,8 +15,7 @@ async function fetchModelUrls(puid) {
       throw new Error('모델 URL 조회 실패: ' + response.status);
     }
 
-    const data = await response.json();
-    return data;
+    return await response.json();
   } catch (error) {
     console.error('모델 URL 조회 중 오류:', error);
     return { models: {} };
