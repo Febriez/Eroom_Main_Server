@@ -1,250 +1,309 @@
 package com.febrie.service;
 
 import com.febrie.api.MeshyAPI;
+import com.febrie.model.MeshyTask;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
-import java.util.ArrayList;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 /**
- * 시나리오에서 생성된 키워드로 Meshy API를 통해 3D 모델을 생성하고
- * 결과를 클라이언트에 전송하는 기능을 제공하는 서비스 클래스
+ * Meshy 3D 모델 생성 서비스
  */
 @Slf4j
 public class MeshyModelService {
+    private static MeshyModelService instance;
+    private final MeshyAPI meshyApi;
+    private final ExecutorService executor;
 
-    private static volatile MeshyModelService instance;
-    private final MeshyAPI meshyAPI;
-    private final ExecutorService executorService;
-    private final Map<String, Map<String, String>> modelUrlCache; // puid -> (modelName -> fbxUrl)
+    // 태스크 진행 상황 추적을 위한 맵
+    private final ConcurrentHashMap<String, Map<String, MeshyTask>> tasksByPuid = new ConcurrentHashMap<>();
 
-    private MeshyModelService() {
-        this.meshyAPI = MeshyAPI.getInstance();
-        this.executorService = Executors.newFixedThreadPool(5); // 5개 스레드 병렬 처리
-        this.modelUrlCache = new ConcurrentHashMap<>();
-    }
+    // 태스크 처리 시간 추적
+    private final ConcurrentHashMap<String, Long> processingTimeByPuid = new ConcurrentHashMap<>();
 
-    public static MeshyModelService getInstance() {
+    // 완료된 모델 URL 캐시
+    private final ConcurrentHashMap<String, Map<String, String>> completedModelUrlsByPuid = new ConcurrentHashMap<>();
+
+    /**
+     * 싱글톤 인스턴스 반환
+     */
+    public static synchronized MeshyModelService getInstance() {
         if (instance == null) {
-            synchronized (MeshyModelService.class) {
-                if (instance == null) {
-                    instance = new MeshyModelService();
-                }
-            }
+            instance = new MeshyModelService();
         }
         return instance;
     }
 
     /**
-     * 시나리오에서 키워드를 추출하여 Meshy API에 3D 모델 생성 요청을 보내고
-     * 생성된 모델의 FBX URL을 준비합니다.
-     *
-     * @param puid           사용자 ID
-     * @param scenarioResult 시나리오 생성 결과
+     * 생성자
+     */
+    private MeshyModelService() {
+        this.meshyApi = MeshyAPI.getInstance();
+        this.executor = Executors.newFixedThreadPool(10);  // 최대 10개 스레드로 동시 처리
+        log.info("Meshy 모델 서비스 초기화 완료");
+    }
+
+    /**
+     * 서비스 종료
+     */
+    public void shutdown() {
+        log.info("Meshy 모델 서비스 종료 중...");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        log.info("Meshy 모델 서비스 종료 완료");
+    }
+
+    /**
+     * 시나리오 키워드에서 3D 모델 생성 태스크 처리
      */
     public void processScenarioKeywords(String puid, @NotNull JsonObject scenarioResult) {
-        log.info("[{}] 시나리오 키워드 처리 시작", puid);
+        log.info("PUID {}의 시나리오 키워드 처리 시작", puid);
 
-        if (!scenarioResult.has("keywords") || !scenarioResult.get("keywords").isJsonArray()) {
-            log.error("[{}] 시나리오에 keywords 배열이 없습니다.", puid);
-            return;
-        }
+        LocalDateTime startTime = LocalDateTime.now();
+        processingTimeByPuid.put(puid, 0L);
 
-        JsonArray keywords = scenarioResult.getAsJsonArray("keywords");
-        if (keywords.isEmpty()) {
-            log.warn("[{}] 시나리오에 키워드가 없습니다.", puid);
-            return;
-        }
+        // 이미 존재하는 태스크 맵이 있으면 가져오고, 없으면 새로 생성
+        Map<String, MeshyTask> tasks = tasksByPuid.computeIfAbsent(puid, k -> new ConcurrentHashMap<>());
 
-        // 기존에 생성된 모델이 있는지 확인
-        if (modelUrlCache.containsKey(puid)) {
-            log.info("[{}] 기존 생성된 모델 캐시 발견, 재사용합니다.", puid);
-            return;
-        }
+        // 모델 URL 캐시 초기화
+        completedModelUrlsByPuid.put(puid, new ConcurrentHashMap<>());
 
-        // 키워드를 기반으로 비동기적으로 모델 생성 요청
-        log.info("[{}] {} 개의 키워드에 대해 Meshy API 모델 생성 요청 시작", puid, keywords.size());
-        CompletableFuture.runAsync(() -> createModelsFromKeywords(puid, keywords), executorService);
-
-        // 요청은 백그라운드에서 계속 진행됩니다
-    }
-
-    /**
-     * 키워드 목록에서 모델을 생성하는 비동기 프로세스
-     *
-     * @param puid     사용자 ID
-     * @param keywords 키워드 배열
-     */
-    private void createModelsFromKeywords(String puid, @NotNull JsonArray keywords) {
-        Map<String, String> modelUrls = new HashMap<>();
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
-
-        for (int i = 0; i < keywords.size(); i++) {
-            try {
-                JsonObject keyword = keywords.get(i).getAsJsonObject();
-                String objectName = keyword.get("name").getAsString();
-                String modelPrompt = keyword.get("value").getAsString();
-
-                // 각 키워드에 대해 비동기적으로 모델 생성 요청
-                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    try {
-                        // 모델 생성 요청 (API 기본값 사용)
-                        String fbxUrl = requestModelAndWaitForCompletion(objectName, modelPrompt);
-                        if (fbxUrl != null) {
-                            synchronized (modelUrls) {
-                                modelUrls.put(objectName, fbxUrl);
-                            }
-                            // 새 모델이 생성되면 캐시 업데이트
-                            updateModelCache(puid, objectName, fbxUrl);
-                        }
-                    } catch (Exception e) {
-                        log.error("[{}] 모델 '{}' 생성 중 오류: {}", puid, objectName, e.getMessage());
-                    }
-                }, executorService);
-
-                futures.add(future);
-            } catch (Exception e) {
-                log.error("[{}] 키워드 처리 중 오류: {}", puid, e.getMessage());
-            }
-        }
-
-        // 모든 요청이 완료될 때까지 기다리지 않고 백그라운드에서 진행
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                .thenAccept(v -> log.info("[{}] 모든 모델 생성 요청 완료. 생성된 모델: {}", puid, modelUrls.size()))
-                .exceptionally(e -> {
-                    log.error("[{}] 일부 모델 생성 요청 실패: {}", puid, e.getMessage());
-                    return null;
-                });
-    }
-
-    /**
-     * Meshy API를 통해 모델을 생성하고 완료될 때까지 대기한 후 FBX URL을 반환
-     *
-     * @param objectName  객체 이름
-     * @param modelPrompt 모델 생성 프롬프트
-     * @return FBX URL 또는 null (실패 시)
-     */
-    private String requestModelAndWaitForCompletion(String objectName, String modelPrompt) {
         try {
-            log.info("[{}] 모델 생성 요청 시작", objectName);
+            // 키워드 배열 추출
+            if (!scenarioResult.has("keywords") || !scenarioResult.get("keywords").isJsonArray()) {
+                log.error("시나리오 결과에 keywords 배열이 없습니다: {}", scenarioResult);
+                return;
+            }
 
-            // Preview 모델 생성 요청
-            String taskId = meshyAPI.createPreviewTask(modelPrompt);
-            log.info("[{}] Preview 태스크 ID: {}", objectName, taskId);
+            JsonArray keywordsArray = scenarioResult.getAsJsonArray("keywords");
+            int keywordCount = keywordsArray.size();
+            log.info("처리할 키워드 수: {}", keywordCount);
 
-            // 모델 생성 완료 대기
-            MeshyAPI.TaskStatus status = waitForTaskCompletion(taskId, objectName);
+            CountDownLatch latch = new CountDownLatch(keywordCount);
 
-            // 성공 여부 확인 및 URL 반환
-            if (status != null && "SUCCEEDED".equals(status.status) && status.modelUrls != null) {
-                log.info("[{}] 모델 생성 성공: {}", objectName, status.modelUrls.fbx);
-                return status.modelUrls.fbx;
+            // 각 키워드에 대해 비동기 처리
+            for (JsonElement keywordElement : keywordsArray) {
+                JsonObject keywordObj = keywordElement.getAsJsonObject();
+                if (!keywordObj.has("name") || !keywordObj.has("value")) continue;
+
+                String modelName = keywordObj.get("name").getAsString();
+                String prompt = keywordObj.get("value").getAsString();
+
+                // 비동기로 모델 생성 태스크 처리
+                executor.submit(() -> {
+                    try {
+                        processModelGeneration(puid, modelName, prompt, tasks);
+                    } catch (Exception e) {
+                        log.error("모델 {} 생성 중 오류 발생: {}", modelName, e.getMessage(), e);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
+            }
+
+            // 모든 태스크가 완료될 때까지 대기 (최대 30분)
+            boolean completed = latch.await(30, TimeUnit.MINUTES);
+
+            // 처리 시간 계산 및 저장
+            long elapsedTime = Duration.between(startTime, LocalDateTime.now()).toMillis();
+            processingTimeByPuid.put(puid, elapsedTime);
+
+            if (completed) {
+                log.info("PUID {}의 모든 모델 생성 태스크 완료. 총 소요 시간: {}ms", puid, elapsedTime);
             } else {
-                String errorMsg = (status != null && status.error != null) ? status.error : "알 수 없는 오류";
-                log.error("[{}] 모델 생성 실패: {}", objectName, errorMsg);
-                return null;
+                log.warn("PUID {}의 일부 모델 생성 태스크가 제한 시간 내에 완료되지 않았습니다.", puid);
             }
 
         } catch (Exception e) {
-            log.error("[{}] 모델 요청 중 예외 발생: {}", objectName, e.getMessage());
-            return null;
+            log.error("시나리오 키워드 처리 중 오류 발생: {}", e.getMessage(), e);
         }
     }
 
     /**
-     * 태스크가 완료될 때까지 주기적으로 상태를 확인
-     *
-     * @param taskId     태스크 ID
-     * @param objectName 객체 이름
-     * @return 최종 태스크 상태 또는 null (실패 시)
+     * 단일 모델 생성 처리
      */
-    @Nullable
-    private MeshyAPI.TaskStatus waitForTaskCompletion(String taskId, String objectName) throws IOException, InterruptedException {
-        MeshyAPI.TaskStatus status = null;
-        boolean isCompleted = false;
-        int maxRetries = 60; // 최대 60번 재시도 (10초 간격으로 총 10분)
-        int retryCount = 0;
+    private void processModelGeneration(String puid, String modelName, String prompt, Map<String, MeshyTask> tasks) {
+        try {
+            log.info("모델 생성 시작: {} (PUID: {})", modelName, puid);
 
-        while (!isCompleted && retryCount < maxRetries) {
-            status = meshyAPI.getTaskStatus(taskId);
+            // 1. Preview 태스크 생성
+            String previewTaskId = meshyApi.createPreviewTask(prompt);
+            MeshyTask previewTask = createAndTrackTask(puid, modelName + "_preview", previewTaskId, 
+                    MeshyTask.TaskType.PREVIEW, prompt, tasks);
 
-            if (status == null) {
-                log.error("[{}] 태스크 상태 조회 실패: {}", objectName, taskId);
-                return null;
+            // 2. Preview 완료 대기
+            MeshyAPI.TaskStatus previewStatus = waitForTaskCompletion(previewTaskId);
+            updateTaskStatus(previewTask, previewStatus);
+
+            if (previewTask.getStatus() != MeshyTask.TaskStatus.SUCCEEDED) {
+                log.error("Preview 태스크 실패: {}", previewTask.getErrorMessage());
+                return;
             }
 
-            log.debug("[{}] 태스크 상태: {} - 진행률: {}%", objectName, status.status, status.progress);
+            // 3. Refine 태스크 생성
+            String texturePrompt = "High quality PBR textures for " + prompt;
+            String refineTaskId = meshyApi.createRefineTask(previewTaskId, true, texturePrompt);
+            MeshyTask refineTask = createAndTrackTask(puid, modelName, refineTaskId, 
+                    MeshyTask.TaskType.REFINE, texturePrompt, tasks);
+            refineTask.setParentTaskId(previewTaskId);
 
-            // 완료 상태 확인
-            if ("SUCCEEDED".equals(status.status) || "FAILED".equals(status.status) || "CANCELED".equals(status.status)) {
-                isCompleted = true;
+            // 4. Refine 완료 대기
+            MeshyAPI.TaskStatus refineStatus = waitForTaskCompletion(refineTaskId);
+            updateTaskStatus(refineTask, refineStatus);
+
+            if (refineTask.getStatus() == MeshyTask.TaskStatus.SUCCEEDED) {
+                // 성공한 모델 URL 저장
+                saveCompletedModelUrls(puid, modelName, refineStatus.modelUrls);
+                log.info("모델 생성 완료: {} (PUID: {})", modelName, puid);
             } else {
-                // 10초 대기 후 다시 확인
-                Thread.sleep(10000);
-                retryCount++;
+                log.error("Refine 태스크 실패: {}", refineTask.getErrorMessage());
             }
-        }
 
-        if (!isCompleted) {
-            log.error("[{}] 태스크 완료 대기 시간 초과: {}", objectName, taskId);
+        } catch (Exception e) {
+            log.error("모델 생성 처리 중 오류: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 태스크 생성 및 추적
+     */
+    private MeshyTask createAndTrackTask(String puid, String modelName, String taskId, 
+                                        MeshyTask.TaskType taskType, String prompt,
+                                        Map<String, MeshyTask> tasks) throws IOException {
+        MeshyAPI.TaskStatus initialStatus = meshyApi.getTaskStatus(taskId);
+        MeshyTask task = meshyApi.createMeshyTask(initialStatus, taskType, prompt);
+        tasks.put(modelName, task);
+        return task;
+    }
+
+    /**
+     * 태스크 완료 대기
+     */
+    private MeshyAPI.TaskStatus waitForTaskCompletion(String taskId) throws IOException, InterruptedException {
+        MeshyAPI.TaskStatus status;
+        int attempts = 0;
+        final int maxAttempts = 300;  // 최대 5분 (1초 간격으로 300회)
+
+        do {
+            Thread.sleep(1000);  // 1초 대기
+            status = meshyApi.getTaskStatus(taskId);
+            attempts++;
+
+            if (attempts % 10 == 0) {
+                log.info("태스크 {} 진행 상황: {}% (상태: {})", taskId, status.progress, status.status);
+            }
+
+            // 성공 또는 실패 상태면 바로 반환
+            if ("SUCCEEDED".equals(status.status) || "FAILED".equals(status.status) || "CANCELED".equals(status.status)) {
+                break;
+            }
+
+        } while (attempts < maxAttempts);
+
+        if (attempts >= maxAttempts) {
+            log.warn("태스크 {} 시간 초과 (마지막 상태: {})", taskId, status.status);
         }
 
         return status;
     }
 
     /**
-     * 빈 응답 JSON 객체 생성
-     *
-     * @return 빈 모델 목록을 포함하는 JSON 객체
+     * 태스크 상태 업데이트
      */
-    private JsonObject createEmptyResponse() {
-        JsonObject response = new JsonObject();
-        response.add("models", new JsonObject());
-        return response;
-    }
-
-    // createResponseFromCache 메소드는 제거되었습니다 - 불필요한 코드 정리
-
-    /**
-     * 생성된 모델 URL을 캐시에 업데이트
-     *
-     * @param puid      사용자 ID
-     * @param modelName 모델 이름
-     * @param fbxUrl    FBX URL
-     */
-    private void updateModelCache(String puid, String modelName, String fbxUrl) {
-        modelUrlCache.computeIfAbsent(puid, k -> new ConcurrentHashMap<>())
-                .put(modelName, fbxUrl);
-        log.info("[{}] 모델 캐시 업데이트: {} -> {}", puid, modelName, fbxUrl);
+    private void updateTaskStatus(MeshyTask task, MeshyAPI.TaskStatus apiStatus) {
+        task.setStatus(MeshyTask.TaskStatus.fromApiStatus(apiStatus.status));
+        task.setProgress(apiStatus.progress);
+        task.setLastUpdatedAt(LocalDateTime.now());
+        task.setThumbnailUrl(apiStatus.thumbnailUrl);
+        task.setModelUrls(apiStatus.modelUrls);
+        task.setErrorMessage(apiStatus.error);
     }
 
     /**
-     * 사용자의 모델 캐시를 초기화합니다.
-     *
-     * @param puid 사용자 ID
+     * 완료된 모델 URL 저장
      */
-    public void clearModelCache(String puid) {
-        modelUrlCache.remove(puid);
-        log.info("[{}] 모델 캐시 초기화 완료", puid);
+    private void saveCompletedModelUrls(String puid, String modelName, MeshyAPI.TaskStatus.ModelUrls modelUrls) {
+        Map<String, String> urlMap = completedModelUrlsByPuid.get(puid);
+        if (urlMap == null) return;
+
+        if (modelUrls.glb != null) urlMap.put(modelName + "_glb", modelUrls.glb);
+        if (modelUrls.fbx != null) urlMap.put(modelName + "_fbx", modelUrls.fbx);
+        if (modelUrls.obj != null) urlMap.put(modelName + "_obj", modelUrls.obj);
+        if (modelUrls.mtl != null) urlMap.put(modelName + "_mtl", modelUrls.mtl);
+        if (modelUrls.usdz != null) urlMap.put(modelName + "_usdz", modelUrls.usdz);
+
+        // 기본 형식 (FBX)도 등록
+        if (modelUrls.fbx != null) urlMap.put(modelName, modelUrls.fbx);
     }
 
     /**
-     * 서비스를 종료합니다.
-     * 애플리케이션 종료 시 호출해야 합니다.
+     * 완료된 모델 URL 조회
      */
-    public void shutdown() {
-        executorService.shutdown();
-        log.info("MeshyModelService 종료됨");
+    public Map<String, String> getCompletedModelUrls(String puid) {
+        return completedModelUrlsByPuid.getOrDefault(puid, new HashMap<>());
+    }
+
+    /**
+     * 모델 URL 갱신
+     */
+    public Map<String, String> refreshModelUrls(String puid) {
+        log.info("PUID {}의 모델 URL 갱신 시작", puid);
+        Map<String, MeshyTask> tasks = tasksByPuid.get(puid);
+        if (tasks == null || tasks.isEmpty()) {
+            log.warn("PUID {}의 태스크 정보가 없습니다.", puid);
+            return new HashMap<>();
+        }
+
+        Map<String, String> refreshedUrls = new HashMap<>();
+        for (Map.Entry<String, MeshyTask> entry : tasks.entrySet()) {
+            String modelName = entry.getKey();
+            MeshyTask task = entry.getValue();
+
+            // Refine 태스크만 처리 (Preview 제외)
+            if (task.getTaskType() != MeshyTask.TaskType.REFINE) continue;
+
+            try {
+                log.info("모델 {} URL 갱신 시도", modelName);
+                MeshyAPI.TaskStatus status = meshyApi.getTaskStatus(task.getTaskId());
+                updateTaskStatus(task, status);
+
+                if (task.getStatus() == MeshyTask.TaskStatus.SUCCEEDED && task.getModelUrls() != null) {
+                    saveCompletedModelUrls(puid, modelName, task.getModelUrls());
+                    log.info("모델 {} URL 갱신 완료", modelName);
+                } else {
+                    log.warn("모델 {} URL 갱신 실패: {}", modelName, task.getStatus());
+                }
+            } catch (Exception e) {
+                log.error("모델 {} URL 갱신 중 오류: {}", modelName, e.getMessage());
+            }
+        }
+
+        // 갱신된 URL 맵 반환
+        refreshedUrls = getCompletedModelUrls(puid);
+        log.info("PUID {}의 모델 URL 갱신 완료: {} 개의 URL", puid, refreshedUrls.size());
+        return refreshedUrls;
+    }
+
+    /**
+     * 모델 처리 시간 조회
+     */
+    public Long getModelProcessingTime(String puid) {
+        return processingTimeByPuid.get(puid);
     }
 }

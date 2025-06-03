@@ -1,6 +1,5 @@
 package com.febrie.dto;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import lombok.Getter;
 import org.jetbrains.annotations.Contract;
@@ -15,7 +14,7 @@ public class RoomCreationLogData extends FirebaseLogData {
     private final String theme;
     private final String logs;
     private final JsonObject scenarioData;
-    private final JsonArray scriptData;
+    private final JsonObject scriptData;
 
     /**
      * 성공적인 방 생성 결과를 위한 생성자
@@ -28,7 +27,7 @@ public class RoomCreationLogData extends FirebaseLogData {
      * @param script   스크립트 데이터
      */
     private RoomCreationLogData(String uuid, String puid, String theme,
-                                String status, String logs, JsonObject scenario, JsonArray script) {
+                                String status, String logs, JsonObject scenario, JsonObject script) {
         super(uuid, puid, status);
         this.theme = theme;
         this.logs = logs;
@@ -50,7 +49,7 @@ public class RoomCreationLogData extends FirebaseLogData {
     @NotNull
     @Contract("_, _, _, _, _, _ -> new")
     public static RoomCreationLogData success(String uuid, String puid, String theme,
-                                              String logs, JsonObject scenario, JsonArray script) {
+                                              String logs, JsonObject scenario, JsonObject script) {
         return new RoomCreationLogData(uuid, puid, theme,
                 "SUCCESS", logs, scenario, script);
     }
@@ -68,7 +67,7 @@ public class RoomCreationLogData extends FirebaseLogData {
     @Contract("_, _, _, _ -> new")
     public static RoomCreationLogData error(String uuid, String puid, String theme, String errorMessage) {
         return new RoomCreationLogData(uuid, puid, theme,
-                "ERROR", errorMessage, new JsonObject(), new JsonArray());
+                "ERROR", errorMessage, new JsonObject(), new JsonObject());
     }
 
     @Override

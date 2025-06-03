@@ -6,10 +6,12 @@ import com.febrie.dto.JsonRoomData;
 import com.febrie.dto.LogEntry;
 import com.febrie.dto.ProcessResult;
 import com.febrie.dto.RoomCreationLogData;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.febrie.service.MeshyModelService;
+import com.febrie.util.ErrorLogger;
 import com.febrie.util.FileManager;
 import com.febrie.util.FirebaseLogger;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.undertow.server.HttpHandler;
@@ -22,11 +24,15 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public class UndertowRoomCreateHandler implements HttpHandler {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(UndertowRoomCreateHandler.class);
+    private static final Gson gson = new GsonBuilder().disableHtmlEscaping().create(); // 특수문자 이스케이프 처리 비활성화
 
     private static final String CONTENT_TYPE_JSON = "application/json";
     private final FileManager fileManager = FileManager.getInstance();
@@ -75,14 +81,117 @@ public class UndertowRoomCreateHandler implements HttpHandler {
 
     private int processAction(@NotNull HttpServerExchange exchange, @NotNull String action, @NotNull String requestBody) {
         return switch (action) {
+            case "refresh-model-urls" -> {
+                // URL 경로에서 PUID 추출
+                String pathPuid = exchange.getRequestPath().replace("/room/refresh-model-urls/", "");
+                if (pathPuid.isEmpty()) {
+                    sendError(exchange, StatusCodes.BAD_REQUEST, "PUID가 제공되지 않았습니다.");
+                    yield StatusCodes.BAD_REQUEST;
+                }
+
+                log.info("모델 URL 갱신 요청 - PUID: {}", pathPuid);
+
+                // 해당 PUID의 모델 URL 조회
+                Map<String, String> modelUrls = MeshyModelService.getInstance().getCompletedModelUrls(pathPuid);
+                if (modelUrls == null || modelUrls.isEmpty()) {
+                    sendError(exchange, StatusCodes.NOT_FOUND, "해당 PUID의 모델 URL을 찾을 수 없습니다.");
+                    yield StatusCodes.NOT_FOUND;
+                }
+
+                // URL 갱신 요청
+                Map<String, String> refreshedUrls = MeshyModelService.getInstance().refreshModelUrls(pathPuid);
+
+                // 응답 구성
+                JsonObject json = new JsonObject();
+                json.addProperty("status", "success");
+                json.addProperty("puid", pathPuid);
+                json.addProperty("timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME));
+
+                // 모델 생성 소요시간 추가 (가능한 경우)
+                Long elapsedTime = MeshyModelService.getInstance().getModelProcessingTime(pathPuid);
+                if (elapsedTime != null && elapsedTime > 0) {
+                    json.addProperty("totalElapsedTimeMs", elapsedTime);
+                    json.addProperty("totalElapsedTimeSec", elapsedTime / 1000);
+                }
+
+                // 모델 URL 정보 구성 (중첩 구조로 변경)
+                JsonObject modelsJson = new JsonObject();
+                Map<String, JsonObject> modelFormatMaps = new HashMap<>();
+
+                // 모든 URL 순회하며 모델별로 그룹화
+                for (Map.Entry<String, String> entry : refreshedUrls.entrySet()) {
+                    String key = entry.getKey();
+                    String url = entry.getValue();
+
+                    if (key.contains("_")) {
+                        // 모델명_형식 형태 처리
+                        String[] parts = key.split("_", 2);
+                        String modelName = parts[0];
+                        String format = parts[1];
+
+                        // 해당 모델의 JsonObject 가져오기
+                        JsonObject formatObj = modelFormatMaps.computeIfAbsent(modelName, k -> new JsonObject());
+                        formatObj.addProperty(format, url);
+                    } else {
+                        // 기본 이름 형태 (일반적으로 FBX)
+                        JsonObject formatObj = modelFormatMaps.computeIfAbsent(key, k -> new JsonObject());
+                        formatObj.addProperty("fbx", url);
+                    }
+                }
+
+                // 모델별로 정리된 JsonObject 추가
+                for (Map.Entry<String, JsonObject> entry : modelFormatMaps.entrySet()) {
+                    modelsJson.add(entry.getKey(), entry.getValue());
+                }
+                json.add("modelUrls", modelsJson);
+
+                // 하위 호환성을 위해 평면 형태의 URL도 포함
+                JsonObject flatUrlsJson = new JsonObject();
+                for (Map.Entry<String, String> entry : refreshedUrls.entrySet()) {
+                    flatUrlsJson.addProperty(entry.getKey(), entry.getValue());
+                }
+                json.add("allModelUrls", flatUrlsJson);
+
+                exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, CONTENT_TYPE_JSON);
+                // 이스케이프 처리가 비활성화된 Gson 사용하여 JSON 직렬화
+                String jsonResponse = gson.toJson(json);
+                exchange.getResponseSender().send(jsonResponse);
+                yield StatusCodes.OK;
+            }
             case "create" -> {
-                JsonRoomData roomData = JsonRoomData.fromJson(JsonParser.parseString(requestBody), UUID.randomUUID().toString());
+                // JSON 요청 파싱
+                JsonObject requestJson = JsonParser.parseString(requestBody).getAsJsonObject();
+                JsonRoomData roomData = JsonRoomData.fromJson(requestJson, UUID.randomUUID().toString());
+
+                // 콜백 URL이 있으면 등록
+                if (requestJson.has("callbackUrl") && !requestJson.get("callbackUrl").isJsonNull()) {
+                    String callbackUrl = requestJson.get("callbackUrl").getAsString();
+                    com.febrie.service.ClientCallbackRegistry.registerCallbackUrl(roomData.puid(), callbackUrl);
+                    System.out.println("[INFO] 콜백 URL 등록됨: " + callbackUrl + " (PUID: " + roomData.puid() + ")");
+                }
+
+                // 룸 생성 처리
                 ProcessResult result = executeRoomCreation(roomData, requestBody);
                 exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, CONTENT_TYPE_JSON);
+
+                // 응답 구성
                 JsonObject json = new JsonObject();
-                json.add("scenario_data", result.scenarioResult());
+                json.addProperty("status", "success");
+                json.addProperty("uuid", roomData.uuid());
+                json.addProperty("puid", roomData.puid());
+                json.addProperty("timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME));
+                json.addProperty("scenario_data", result.scenarioResult().get("scenario_data").getAsString());
                 json.add("scripts", result.scriptResult());
-                exchange.getResponseSender().send(json.toString());
+                json.addProperty("modelsStatus", "pending");
+                json.addProperty("message", "Room created successfully. 3D models are being generated in the background.");
+
+                // 모델 URL 갱신 API 경로 추가
+                String refreshUrlEndpoint = "/room/refresh-model-urls/" + roomData.puid();
+                json.addProperty("refreshUrlsEndpoint", refreshUrlEndpoint);
+
+                // 이스케이프 처리가 비활성화된 Gson 사용하여 JSON 직렬화
+                String jsonResponse = gson.toJson(json);
+                exchange.getResponseSender().send(jsonResponse);
                 saveResults(roomData, result, buildFilePath(roomData));
                 yield StatusCodes.OK;
             }
@@ -109,54 +218,67 @@ public class UndertowRoomCreateHandler implements HttpHandler {
     private ProcessResult executeRoomCreation(@NotNull JsonRoomData data, String requestBody) {
         long startTime = System.currentTimeMillis();
         System.out.println("[INFO] 룸 생성 프로세스 시작 - UUID: " + data.uuid() + ", PUID: " + data.puid());
-
-        // 중요 환경 변수 확인
-        String anthropicApiKey = System.getenv("ANTHROPIC_API_KEY");
-        if (anthropicApiKey == null || anthropicApiKey.isEmpty()) {
-            System.out.println("[WARN] ANTHROPIC_API_KEY 환경 변수가 설정되지 않았습니다. API 호출이 실패할 수 있습니다.");
-        }
+        StringBuilder processLogBuilder = new StringBuilder();
         try {
             long requestLogStartTime = System.currentTimeMillis();
             LogEntry initialLog = LogEntry.create("INITIAL_REQUEST", requestBody, data.toString());
+            processLogBuilder.append("[INFO] 초기 요청 로깅 시작\n");
+            processLogBuilder.append(initialLog.format()).append("\n");
             System.out.println("[INFO] 초기 요청 로깅 완료 - 소요시간: " + (System.currentTimeMillis() - requestLogStartTime) + "ms");
+            processLogBuilder.append("[INFO] 초기 요청 로깅 완료 - 소요시간: ").append(System.currentTimeMillis() - requestLogStartTime).append("ms\n");
 
             System.out.println("[INFO] 시나리오 생성 중...");
+            processLogBuilder.append("[INFO] 시나리오 생성 시작\n");
             long scenarioStartTime = System.currentTimeMillis();
             JsonObject scenarioResult = Main.scenario(data.puid(), data.theme(), data.keywords(), data.room_URL());
             LogEntry scenarioLog = LogEntry.create("SCENARIO_GENERATION", formatScenarioInput(data), scenarioResult.toString());
+            processLogBuilder.append(scenarioLog.format()).append("\n");
             System.out.println("[INFO] 시나리오 생성 완료 - 소요시간: " + (System.currentTimeMillis() - scenarioStartTime) + "ms");
+            processLogBuilder.append("[INFO] 시나리오 생성 완료 - 소요시간: ").append(System.currentTimeMillis() - scenarioStartTime).append("ms\n");
 
+            processLogBuilder.append("[INFO] Meshy 키워드 처리 시작\n");
             processKeywordsForMeshy(data.puid(), scenarioResult);
+            processLogBuilder.append("[INFO] Meshy 키워드 처리 완료\n");
 
             System.out.println("[INFO] 스크립트 생성 중...");
+            processLogBuilder.append("[INFO] 스크립트 생성 시작\n");
             long scriptStartTime = System.currentTimeMillis();
-            JsonArray scriptResult = Main.gScripts(scenarioResult.get("datas").getAsJsonArray().toString(), data.room_URL());
+            JsonObject scriptResult = Main.gScripts(scenarioResult.get("datas").getAsJsonArray().toString(), data.room_URL());
             LogEntry scriptLog = LogEntry.create("SCRIPT_GENERATION", scenarioResult.toString(), scriptResult.toString());
+            processLogBuilder.append(scriptLog.format()).append("\n");
             System.out.println("[INFO] 스크립트 생성 완료 - 소요시간: " + (System.currentTimeMillis() - scriptStartTime) + "ms");
+            processLogBuilder.append("[INFO] 스크립트 생성 완료 - 소요시간: ").append(System.currentTimeMillis() - scriptStartTime).append("ms\n");
 
 
-            String combinedLog = String.join("\n", initialLog.format(), scenarioLog.format(), scriptLog.format());
+            String combinedLog = processLogBuilder.toString();
 
             System.out.println("[INFO] 룸 생성 프로세스 성공 - 총 소요시간: " + (System.currentTimeMillis() - startTime) + "ms");
+            processLogBuilder.append("[INFO] 룸 생성 프로세스 성공 - 총 소요시간: ").append(System.currentTimeMillis() - startTime).append("ms\n");
             return ProcessResult.success(combinedLog, scenarioResult, scriptResult);
         } catch (Exception e) {
-            System.out.println("[ERROR] 룸 생성 중 오류 발생 - 소요시간: " + (System.currentTimeMillis() - startTime) + "ms");
+            String errorMsg = "[ERROR] 룸 생성 중 오류 발생 - 소요시간: " + (System.currentTimeMillis() - startTime) + "ms";
+            System.out.println(errorMsg);
+            processLogBuilder.append(errorMsg).append("\n");
+
+            StringBuilder stackTrace = new StringBuilder(e.toString());
+            for (StackTraceElement element : e.getStackTrace()) {
+                stackTrace.append("\n    at ").append(element.toString());
+            }
+
             System.err.println("[ERROR] 오류 내용: " + e);
-            return ProcessResult.error("[Error] " + e);
+            processLogBuilder.append("[ERROR] 오류 내용: ").append(stackTrace).append("\n");
+
+            // 오류가 발생했더라도 지금까지 수집된 모든 로그를 저장
+            com.febrie.util.LogManager.logFailure("API 호출 실패 로그:\n" + processLogBuilder.toString());
+
+            return ProcessResult.error(processLogBuilder.toString(), "[Error] " + e.getMessage());
         }
     }
 
     private void processKeywordsForMeshy(String puid, JsonObject scenarioResult) {
         try {
             System.out.println("[INFO] 시나리오 키워드로 3D 모델 생성 처리 시작 - PUID: " + puid);
-
-            String meshyApiKey = System.getenv("MESHY_API_KEY");
-            if (meshyApiKey == null || meshyApiKey.isEmpty()) {
-                System.out.println("[WARN] MESHY_API_KEY 환경 변수가 설정되지 않았습니다. 3D 모델 생성이 실패할 수 있습니다.");
-            }
-
             MeshyModelService.getInstance().processScenarioKeywords(puid, scenarioResult);
-
         } catch (Exception e) {
             System.out.println("[ERROR] 3D 모델 생성 처리 중 오류: " + e.getMessage());
         }
@@ -230,12 +352,15 @@ public class UndertowRoomCreateHandler implements HttpHandler {
 
     private void handleSaveError(JsonRoomData data, @NotNull Exception e) {
         try {
-            // 현재 구현에서는 직접 Firebase에 로그를 저장하기 때문에 더 이상 필요하지 않지만,
-            // 기존 인터페이스 유지를 위해 FirebaseLogger를 계속 사용
+            // 새 ErrorLogger 클래스를 사용하여 더 자세한 오류 정보 저장
+            String contextInfo = "룸 생성 결과 저장 중 오류 - UUID: " + data.uuid() + ", PUID: " + data.puid() + ", 테마: " + data.theme();
+            ErrorLogger.logException(contextInfo, e);
+
+            // Firebase에도 기본 정보 저장 (호환성 유지)
             RoomCreationLogData errorLog = RoomCreationLogData.error(data.uuid(), data.puid(), data.theme(), "Logging process failed: " + e.getMessage());
             FirebaseLogger.saveServerLogSync(errorLog);
-        } catch (Exception ignored) {
-            // 무시
+        } catch (Exception ex) {
+            System.err.println("[SEVERE] 로그 저장 중 추가 오류 발생: " + ex);
         }
     }
 
@@ -273,7 +398,9 @@ public class UndertowRoomCreateHandler implements HttpHandler {
         errorResponse.addProperty("method", requestMethod);
         errorResponse.addProperty("timestamp", LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME));
 
-        exchange.getResponseSender().send(errorResponse.toString());
+        // 이스케이프 처리가 비활성화된 Gson 사용하여 JSON 직렬화
+        String jsonResponse = gson.toJson(errorResponse);
+        exchange.getResponseSender().send(jsonResponse);
         exchange.endExchange();
     }
 

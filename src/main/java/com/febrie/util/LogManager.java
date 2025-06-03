@@ -37,12 +37,16 @@ public class LogManager {
         String logEntry = formatLogEntry(message);
         writeToFile(PathConfig.getInstance().getFailedLogFilePath(), logEntry);
 
-        // 중요한 오류는 디버그 로그에도 별도 저장 (장기 유지용)
-        if (message.contains("Firebase 로그 저장 실패") ||
-                message.contains("오류 메시지:") ||
-                message.contains("스택 트레이스:")) {
-            writeToFile(PathConfig.getInstance().getDebugLogFilePath(), logEntry);
-        }
+        // 모든 실패 로그를 디버그 로그에도 저장
+        writeToFile(PathConfig.getInstance().getDebugLogFilePath(), logEntry);
+
+        // 실패 발생 시 시스템 정보도 함께 저장
+        String systemInfo = formatLogEntry("시스템 정보:\n" + 
+            "OS: " + System.getProperty("os.name") + " " + System.getProperty("os.version") + "\n" +
+            "Java: " + System.getProperty("java.version") + "\n" +
+            "사용 가능 메모리: " + (Runtime.getRuntime().maxMemory() / (1024*1024)) + "MB\n" +
+            "현재 시간: " + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+        writeToFile(PathConfig.getInstance().getDebugLogFilePath(), systemInfo);
     }
 
     /**

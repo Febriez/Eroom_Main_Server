@@ -13,7 +13,7 @@ public class PathConfig {
 
     private static volatile PathConfig instance;
 
-    private static final String BASE_DIRECTORY = System.getProperty("user.home") + "/Desktop";
+    private static final String BASE_DIRECTORY = System.getProperty("user.home") + "/Desktop/Claude_Logs";
     private String logsDirectory;
 
     private static final String SUCCESS_LOG_FILENAME = "success.log";
