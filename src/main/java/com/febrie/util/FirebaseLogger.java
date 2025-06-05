@@ -1,7 +1,7 @@
 package com.febrie.util;
 
 import com.febrie.Main;
-import com.febrie.dto.FirebaseLogData;
+import com.febrie.log.FirebaseLogData;
 import com.google.cloud.firestore.Firestore;
 import com.google.firebase.cloud.FirestoreClient;
 import com.google.gson.Gson;

@@ -1,4 +1,4 @@
-package com.febrie.dto;
+package com.febrie.log;
 
 import com.google.gson.JsonObject;
 import lombok.Getter;

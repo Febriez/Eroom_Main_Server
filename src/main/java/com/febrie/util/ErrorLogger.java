@@ -1,6 +1,7 @@
 package com.febrie.util;
 
 import com.febrie.config.PathConfig;
+import com.febrie.manager.file.FileManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,7 +69,8 @@ public class ErrorLogger {
      */
     public static void logApiFailure(String context, String requestData, String responseData, Throwable exception) {
         StringBuilder sb = new StringBuilder();
-        sb.append("[" + LocalDateTime.now().format(TIME_FORMATTER) + "] ");
+        String timestamp = LocalDateTime.now().format(TIME_FORMATTER);
+        sb.append("[" + timestamp + "] ");
         sb.append("API 호출 실패: ").append(context).append("\n\n");
 
         // 요청 및 응답 데이터

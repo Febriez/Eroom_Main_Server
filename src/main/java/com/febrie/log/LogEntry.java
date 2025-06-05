@@ -1,4 +1,4 @@
-package com.febrie.dto;
+package com.febrie.log;
 
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;

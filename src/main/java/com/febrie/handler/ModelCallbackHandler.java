@@ -47,12 +47,15 @@ public class ModelCallbackHandler implements HttpHandler {
 
             // 콘솔에 예쁘게 출력
             String prettyJson = gson.toJson(json);
-            log.info("\n=========== 모델 생성 콜백 수신 ===========\n" +
-                    "상태: {}\n" +
-                    "PUID: {}\n" +
-                    "시간: {}\n\n" +
-                    "-- 콜백 데이터 --\n{}\n" +
-                    "==========================================",
+            log.info("""
+                            =========== 모델 생성 콜백 수신 ===========
+                            상태: {}
+                            PUID: {}
+                            시간: {}
+                            
+                            -- 콜백 데이터 --
+                            {}
+                            ==========================================""",
                     status, puid, timestamp, prettyJson);
 
             // 응답 반환

@@ -13,7 +13,6 @@ public class ApiKeyRotator {
     private static ApiKeyRotator instance;
 
     private final List<String> apiKeys = new ArrayList<>();
-
     private final AtomicInteger currentIndex = new AtomicInteger(0);
 
     public static synchronized ApiKeyRotator getInstance() {

@@ -1,6 +1,6 @@
 package com.febrie.config;
 
-import com.febrie.util.FileManager;
+import com.febrie.manager.file.FileManager;
 import lombok.Getter;
 
 import java.nio.file.Path;

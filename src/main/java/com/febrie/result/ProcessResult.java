@@ -1,4 +1,4 @@
-package com.febrie.dto;
+package com.febrie.result;
 
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.Contract;

@@ -3,13 +3,12 @@ package com.febrie.handler;
 import com.febrie.Main;
 import com.febrie.config.PathConfig;
 import com.febrie.dto.JsonRoomData;
-import com.febrie.dto.LogEntry;
-import com.febrie.dto.ProcessResult;
-import com.febrie.dto.RoomCreationLogData;
+import com.febrie.log.LogEntry;
+import com.febrie.log.RoomCreationLogData;
+import com.febrie.manager.file.FileManager;
+import com.febrie.result.ProcessResult;
 import com.febrie.service.MeshyModelService;
-import com.febrie.util.ErrorLogger;
-import com.febrie.util.FileManager;
-import com.febrie.util.FirebaseLogger;
+import com.febrie.util.*;
 import com.google.gson.*;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
@@ -112,28 +111,7 @@ public class UndertowRoomCreateHandler implements HttpHandler {
 
                 // 모델 URL 정보 구성 (중첩 구조로 변경)
                 JsonObject modelsJson = new JsonObject();
-                Map<String, JsonObject> modelFormatMaps = new HashMap<>();
-
-                // 모든 URL 순회하며 모델별로 그룹화
-                for (Map.Entry<String, String> entry : refreshedUrls.entrySet()) {
-                    String key = entry.getKey();
-                    String url = entry.getValue();
-
-                    if (key.contains("_")) {
-                        // 모델명_형식 형태 처리
-                        String[] parts = key.split("_", 2);
-                        String modelName = parts[0];
-                        String format = parts[1];
-
-                        // 해당 모델의 JsonObject 가져오기
-                        JsonObject formatObj = modelFormatMaps.computeIfAbsent(modelName, k -> new JsonObject());
-                        formatObj.addProperty(format, url);
-                    } else {
-                        // 기본 이름 형태 (일반적으로 FBX)
-                        JsonObject formatObj = modelFormatMaps.computeIfAbsent(key, k -> new JsonObject());
-                        formatObj.addProperty("fbx", url);
-                    }
-                }
+                Map<String, JsonObject> modelFormatMaps = extractModelFormatMaps(refreshedUrls);
 
                 // 모델별로 정리된 JsonObject 추가
                 for (Map.Entry<String, JsonObject> entry : modelFormatMaps.entrySet()) {
@@ -220,10 +198,15 @@ public class UndertowRoomCreateHandler implements HttpHandler {
             // 초기 요청 로깅
             long requestLogStartTime = System.currentTimeMillis();
             LogEntry initialLog = LogEntry.create("INITIAL_REQUEST", requestBody, data.toString());
-            processLogBuilder.append("[INFO] 초기 요청 로깅 시작\n");
+            LogHelper.processLogBuilder(processLogBuilder,
+                    LogProcessType.INITIAL_REQUEST,
+                    LogLevel.INFO);
             processLogBuilder.append(initialLog.format()).append("\n");
-            log.info("초기 요청 로깅 완료 - 소요시간: {}ms", (System.currentTimeMillis() - requestLogStartTime));
-            processLogBuilder.append("[INFO] 초기 요청 로깅 완료 - 소요시간: ").append(System.currentTimeMillis() - requestLogStartTime).append("ms\n");
+            long logTime = System.currentTimeMillis() - requestLogStartTime;
+            LogHelper.processLogBuilder(processLogBuilder,
+                    LogProcessType.COMPLETION,
+                    LogLevel.INFO,
+                    "초기 요청 로깅 완료 - 소요시간: " + logTime + "ms");
 
             // 시나리오 생성
             log.info("시나리오 생성 중...");
@@ -344,7 +327,7 @@ public class UndertowRoomCreateHandler implements HttpHandler {
             log.error("오류 내용: {}", e);
             processLogBuilder.append("[ERROR] 오류 내용: ").append(stackTrace).append("\n");
 
-            com.febrie.util.LogUtility.writeErrorLog("API 호출 실패 로그:\n" + processLogBuilder.toString());
+            LogUtility.writeErrorLog("API 호출 실패 로그:\n" + processLogBuilder.toString());
 
             return ProcessResult.error(processLogBuilder.toString(), "[Error] " + e.getMessage());
         }
@@ -398,7 +381,7 @@ public class UndertowRoomCreateHandler implements HttpHandler {
                     "UUID: %s, PUID: %s, Theme: %s\n%s",
                     data.uuid(), data.puid(), data.theme(), result.combinedLog()
             );
-            com.febrie.util.LogUtility.writeSuccessLog(logContent);
+            LogUtility.writeSuccessLog(logContent);
             log.info("성공 로그 저장 완료 - 소요시간: {}ms",
                     (System.currentTimeMillis() - fileStartTime));
         }).join();
@@ -445,6 +428,40 @@ public class UndertowRoomCreateHandler implements HttpHandler {
     @NotNull
     private String formatScenarioInput(@NotNull JsonRoomData data) {
         return data.toString();
+    }
+
+    /**
+     * 모델 URL 맵에서 모델 이름과 형식별로 그룹화된 Map을 생성합니다.
+     *
+     * @param modelUrls 모델 URL 맵 (키: 모델명_형식, 값: URL)
+     * @return 모델명을 키로 하고 형식별 URL을 값으로 하는 Map
+     */
+    @NotNull
+    private Map<String, JsonObject> extractModelFormatMaps(@NotNull Map<String, String> modelUrls) {
+        Map<String, JsonObject> modelFormatMaps = new HashMap<>();
+
+        // 모든 URL 순회하며 모델별로 그룹화
+        for (Map.Entry<String, String> entry : modelUrls.entrySet()) {
+            String key = entry.getKey();
+            String url = entry.getValue();
+
+            if (key.contains("_")) {
+                // 모델명_형식 형태 처리
+                String[] parts = key.split("_", 2);
+                String modelName = parts[0];
+                String format = parts[1];
+
+                // 해당 모델의 JsonObject 가져오기
+                JsonObject formatObj = modelFormatMaps.computeIfAbsent(modelName, k -> new JsonObject());
+                formatObj.addProperty(format, url);
+            } else {
+                // 기본 이름 형태 (일반적으로 FBX)
+                JsonObject formatObj = modelFormatMaps.computeIfAbsent(key, k -> new JsonObject());
+                formatObj.addProperty("fbx", url);
+            }
+        }
+
+        return modelFormatMaps;
     }
 
 

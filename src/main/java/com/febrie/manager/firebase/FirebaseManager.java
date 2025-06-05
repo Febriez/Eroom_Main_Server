@@ -1,4 +1,4 @@
-package com.febrie.util;
+package com.febrie.manager.firebase;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.firebase.FirebaseApp;

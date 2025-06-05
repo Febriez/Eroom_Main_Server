@@ -7,7 +7,14 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.TextBlock;
 import com.febrie.config.PromptConfig;
 import com.febrie.http.HttpServer;
-import com.febrie.util.FirebaseManager;
+import com.febrie.manager.firebase.FirebaseManager;
+import com.febrie.logging.LogHelper;
+import com.febrie.logging.LogLevel;
+import com.febrie.logging.LogProcessType;
+import com.febrie.logging.LogUtility;
+import com.febrie.logging.PrettyLogger;
+import com.febrie.log.LogEntry;
+import com.febrie.result.ProcessResult;
 import com.google.firebase.FirebaseApp;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -15,6 +22,8 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 
 public class Main {
@@ -92,10 +101,18 @@ public class Main {
 
     public static JsonObject scenario(String puid, String theme, String[] keywords) {
         long startTime = System.currentTimeMillis();
-        log.info("시나리오 생성 요청 시작 - PUID: {}, 테마: {}", puid, theme);
+        String uuid = "asdfasdfsdaf5"; // TODO: 실제 UUID 가져오기
+
+        // 구조화된 로그 생성
+        PrettyLogger.LogEntry logEntry = LogHelper.createLogEntry(uuid, puid, theme);
+
+        StringBuilder logBuilder = new StringBuilder();
+        LogHelper.processLogBuilder(logBuilder, LogProcessType.SCENARIO_GENERATION, LogLevel.INFO);
+        logBuilder.append("PUID: ").append(puid).append(", 테마: ").append(theme).append("\n");
+        logBuilder.append("키워드: ").append(String.join(", ", keywords)).append("\n");
 
         PromptConfig config = PromptConfig.getInstance();
-        String requestContent = "uid: " + puid + ", Theme: " + theme + ", " + "keywords: [" + String.join(", ", keywords) + "]";
+        String requestContent = "uid: " + uuid + ", Theme: " + theme + ", " + "keywords: [" + String.join(", ", keywords) + "]";
 
         MessageCreateParams params = MessageCreateParams.builder()
                 .model(config.getModelName())
@@ -105,23 +122,30 @@ public class Main {
                 .addUserMessage(requestContent)
                 .build();
 
-        log.info("Claude API 요청 중...");
+        LogHelper.processLogBuilder(logBuilder, LogProcessType.SCENARIO_API_REQUEST, LogLevel.INFO);
+
         long apiStartTime = System.currentTimeMillis();
         Message message;
         try {
             message = client.messages().create(params);
-            log.info("Claude API 응답 수신 - 소요시간: {}ms", (System.currentTimeMillis() - apiStartTime));
+            long apiTime = System.currentTimeMillis() - apiStartTime;
+            LogHelper.processLogBuilder(logBuilder, LogProcessType.SCENARIO_API_RESPONSE, LogLevel.INFO, 
+                    "소요시간: " + apiTime + "ms");
         } catch (Exception e) {
-            log.error("Claude API 요청 실패: {}", e.getMessage(), e);
-            com.febrie.util.ErrorLogger.logApiFailure("시나리오 생성 API 호출", requestContent, "응답 없음 (API 예외)", e);
+            LogHelper.logFailure(logEntry, logBuilder, e, "시나리오 생성 API 호출", requestContent);
             throw e;
         }
 
         Optional<TextBlock> firstTextBlock = message.content().getFirst().text();
-        if (firstTextBlock.isEmpty()) throw new IllegalArgumentException("First text block is empty");
+        if (firstTextBlock.isEmpty()) {
+            LogHelper.handleEmptyTextBlock(logEntry, logBuilder);
+        }
+
         JsonObject result = JsonParser.parseString(removeJson(firstTextBlock.get().text())).getAsJsonObject();
 
-        log.info("시나리오 생성 완료 - 총 소요시간: {}ms", (System.currentTimeMillis() - startTime));
+        long totalTime = System.currentTimeMillis() - startTime;
+        LogHelper.logSuccess(logEntry, logBuilder, totalTime, "시나리오 생성");
+
         return result;
     }
 
@@ -130,7 +154,18 @@ public class Main {
                                             String targetObjectName, boolean isGameManager) {
         long startTime = System.currentTimeMillis();
         String logPrefix = isGameManager ? "GameManager" : "개별 오브젝트(" + targetObjectName + ")";
-        log.info("{} 스크립트 생성 요청 시작", logPrefix);
+        String uuid = "asdfasdfsdaf5"; // TODO: 실제 UUID 가져오기
+        String puid = "d9a6a823-0e21-4a88-9f7a-609844279d99"; // TODO: 실제 PUID 가져오기
+
+        // 구조화된 로그 생성
+        PrettyLogger.LogEntry logEntry = LogHelper.createLogEntry(uuid, puid, null);
+
+        StringBuilder logBuilder = new StringBuilder();
+        LogProcessType processType = isGameManager ? 
+                LogProcessType.GAME_MANAGER_GENERATION : 
+                LogProcessType.INDIVIDUAL_SCRIPT_GENERATION;
+
+        LogHelper.processLogBuilder(logBuilder, processType, LogLevel.INFO, logPrefix);
 
         PromptConfig config = PromptConfig.getInstance();
         String requestContent;
@@ -140,13 +175,26 @@ public class Main {
             // GameManager 생성용
             requestContent = "All puzzle object data: " + puzzleData + ", Room Prefab: " + roomPrefabUrl;
             systemPrompt = config.getGameManagerSystemPrompt();
+            logBuilder.append("===========================================\n");
+            logBuilder.append("TYPE: GAMEMANAGER_GENERATION\n");
+            logBuilder.append("TIMESTAMP: ").append(LocalDateTime.now().format(
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("\n");
         } else {
             // 개별 오브젝트 생성용
             requestContent = "Target object: " + targetObjectName +
                     ", All puzzle object data: " + puzzleData +
                     ", GameManager script: " + gameManagerScript;
             systemPrompt = config.getIndividualObjectSystemPrompt();
+            logBuilder.append("===========================================\n");
+            logBuilder.append("TYPE: OBJECT_SCRIPT_GENERATION\n");
+            logBuilder.append("TIMESTAMP: ").append(LocalDateTime.now().format(
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("\n");
+            logBuilder.append("OBJECT: ").append(targetObjectName).append("\n");
         }
+
+        // 입력 정보 로깅
+        logBuilder.append("INPUT: ").append(requestContent.length() > 200 ? 
+                requestContent.substring(0, 200) + "..." : requestContent).append("\n\n");
 
         MessageCreateParams params = MessageCreateParams.builder()
                 .model(config.getModelName())
@@ -156,28 +204,39 @@ public class Main {
                 .addUserMessage(requestContent)
                 .build();
 
-        log.info("Claude API 요청 중 ({} 스크립트 생성)...", logPrefix);
+        LogHelper.processLogBuilder(logBuilder, LogProcessType.SCENARIO_API_REQUEST, LogLevel.INFO, 
+                logPrefix + " 스크립트 생성");
+
         long apiStartTime = System.currentTimeMillis();
         Message message;
         try {
             message = client.messages().create(params);
-            log.info("Claude API 응답 수신 ({} 스크립트 생성) - 소요시간: {}ms",
-                    logPrefix, (System.currentTimeMillis() - apiStartTime));
+            long apiTime = System.currentTimeMillis() - apiStartTime;
+            LogHelper.processLogBuilder(logBuilder, LogProcessType.SCENARIO_API_RESPONSE, LogLevel.INFO,
+                    logPrefix + " 스크립트 생성 - 소요시간: " + apiTime + "ms");
         } catch (Exception e) {
-            log.error("{} 스크립트 생성 API 요청 실패: {}", logPrefix, e.getMessage(), e);
-            com.febrie.util.ErrorLogger.logApiFailure(logPrefix + " 스크립트 생성 API 호출",
-                    requestContent, "응답 없음 (API 예외)", e);
+            LogHelper.logFailure(logEntry, logBuilder, e, 
+                    logPrefix + " 스크립트 생성 API 호출", requestContent);
             throw e;
         }
 
         Optional<TextBlock> firstTextBlock = message.content().getFirst().text();
-        if (firstTextBlock.isEmpty()) throw new IllegalArgumentException("First text block is empty");
+        if (firstTextBlock.isEmpty()) {
+            LogHelper.handleEmptyTextBlock(logEntry, logBuilder);
+        }
 
         String responseText = firstTextBlock.get().text();
-        System.out.println(logPrefix + " 응답: " + responseText);
+
+        // 응답 로깅 (너무 길면 요약)
+        logBuilder.append("OUTPUT: ").append(responseText.length() > 300 ? 
+                responseText.substring(0, 300) + "..." : responseText).append("\n");
+        logBuilder.append("===========================================\n");
 
         JsonObject result = JsonParser.parseString(removeJson(responseText)).getAsJsonObject();
-        log.info("{} 스크립트 생성 완료 - 총 소요시간: {}ms", logPrefix, (System.currentTimeMillis() - startTime));
+
+        long totalTime = System.currentTimeMillis() - startTime;
+        LogHelper.logSuccess(logEntry, logBuilder, totalTime, logPrefix + " 스크립트 생성");
+
         return result;
     }
 
