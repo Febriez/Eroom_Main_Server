@@ -6,14 +6,11 @@ import com.febrie.dto.JsonRoomData;
 import com.febrie.dto.LogEntry;
 import com.febrie.dto.ProcessResult;
 import com.febrie.dto.RoomCreationLogData;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
 import com.febrie.service.MeshyModelService;
 import com.febrie.util.ErrorLogger;
 import com.febrie.util.FileManager;
 import com.febrie.util.FirebaseLogger;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.google.gson.*;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
@@ -24,10 +21,9 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class UndertowRoomCreateHandler implements HttpHandler {
@@ -167,7 +163,7 @@ public class UndertowRoomCreateHandler implements HttpHandler {
                 if (requestJson.has("callbackUrl") && !requestJson.get("callbackUrl").isJsonNull()) {
                     String callbackUrl = requestJson.get("callbackUrl").getAsString();
                     com.febrie.service.ClientCallbackRegistry.registerCallbackUrl(roomData.puid(), callbackUrl);
-                    System.out.println("[INFO] 콜백 URL 등록됨: " + callbackUrl + " (PUID: " + roomData.puid() + ")");
+                    log.info("콜백 URL 등록됨: {} (PUID: {})", callbackUrl, roomData.puid());
                 }
 
                 // 룸 생성 처리
@@ -217,47 +213,127 @@ public class UndertowRoomCreateHandler implements HttpHandler {
 
     private ProcessResult executeRoomCreation(@NotNull JsonRoomData data, String requestBody) {
         long startTime = System.currentTimeMillis();
-        System.out.println("[INFO] 룸 생성 프로세스 시작 - UUID: " + data.uuid() + ", PUID: " + data.puid());
+        log.info("룸 생성 프로세스 시작 - UUID: {}, PUID: {}", data.uuid(), data.puid());
         StringBuilder processLogBuilder = new StringBuilder();
+
         try {
+            // 초기 요청 로깅
             long requestLogStartTime = System.currentTimeMillis();
             LogEntry initialLog = LogEntry.create("INITIAL_REQUEST", requestBody, data.toString());
             processLogBuilder.append("[INFO] 초기 요청 로깅 시작\n");
             processLogBuilder.append(initialLog.format()).append("\n");
-            System.out.println("[INFO] 초기 요청 로깅 완료 - 소요시간: " + (System.currentTimeMillis() - requestLogStartTime) + "ms");
+            log.info("초기 요청 로깅 완료 - 소요시간: {}ms", (System.currentTimeMillis() - requestLogStartTime));
             processLogBuilder.append("[INFO] 초기 요청 로깅 완료 - 소요시간: ").append(System.currentTimeMillis() - requestLogStartTime).append("ms\n");
 
-            System.out.println("[INFO] 시나리오 생성 중...");
+            // 시나리오 생성
+            log.info("시나리오 생성 중...");
             processLogBuilder.append("[INFO] 시나리오 생성 시작\n");
             long scenarioStartTime = System.currentTimeMillis();
-            JsonObject scenarioResult = Main.scenario(data.puid(), data.theme(), data.keywords(), data.room_URL());
+            JsonObject scenarioResult = Main.scenario(data.puid(), data.theme(), data.keywords());
             LogEntry scenarioLog = LogEntry.create("SCENARIO_GENERATION", formatScenarioInput(data), scenarioResult.toString());
             processLogBuilder.append(scenarioLog.format()).append("\n");
-            System.out.println("[INFO] 시나리오 생성 완료 - 소요시간: " + (System.currentTimeMillis() - scenarioStartTime) + "ms");
+            log.info("시나리오 생성 완료 - 소요시간: {}ms", (System.currentTimeMillis() - scenarioStartTime));
             processLogBuilder.append("[INFO] 시나리오 생성 완료 - 소요시간: ").append(System.currentTimeMillis() - scenarioStartTime).append("ms\n");
 
-            processLogBuilder.append("[INFO] Meshy 키워드 처리 시작\n");
-            processKeywordsForMeshy(data.puid(), scenarioResult);
-            processLogBuilder.append("[INFO] Meshy 키워드 처리 완료\n");
+            // Meshy 키워드 처리 (비동기로 시작하고 진행)
+            processLogBuilder.append("[INFO] Meshy 키워드 처리 시작 (비동기)\n");
+            CompletableFuture<Void> meshyFuture = processKeywordsForMeshy(data.puid(), scenarioResult);
+            // 키워드 처리는 백그라운드에서 계속 진행됨
+            processLogBuilder.append("[INFO] Meshy 키워드 처리가 백그라운드에서 계속 진행됩니다\n");
 
-            System.out.println("[INFO] 스크립트 생성 중...");
+            // 스크립트 생성 (새로운 방식)
+            log.info("스크립트 생성 중...");
             processLogBuilder.append("[INFO] 스크립트 생성 시작\n");
             long scriptStartTime = System.currentTimeMillis();
-            JsonObject scriptResult = Main.gScripts(scenarioResult.get("datas").getAsJsonArray().toString(), data.room_URL());
-            LogEntry scriptLog = LogEntry.create("SCRIPT_GENERATION", scenarioResult.toString(), scriptResult.toString());
-            processLogBuilder.append(scriptLog.format()).append("\n");
-            System.out.println("[INFO] 스크립트 생성 완료 - 소요시간: " + (System.currentTimeMillis() - scriptStartTime) + "ms");
-            processLogBuilder.append("[INFO] 스크립트 생성 완료 - 소요시간: ").append(System.currentTimeMillis() - scriptStartTime).append("ms\n");
 
+            JsonArray datasArray = scenarioResult.get("datas").getAsJsonArray();
+
+            // 1. GameManager 생성
+            log.info("GameManager 스크립트 생성 중...");
+            processLogBuilder.append("[INFO] GameManager 스크립트 생성 시작\n");
+            JsonObject gameManagerResult = Main.generateGameManager(datasArray.toString(), data.room_URL());
+            LogEntry gameManagerLog = LogEntry.create("GAMEMANAGER_GENERATION", datasArray.toString(), gameManagerResult.toString());
+            processLogBuilder.append(gameManagerLog.format()).append("\n");
+            log.info("GameManager 스크립트 생성 완료");
+            processLogBuilder.append("[INFO] GameManager 스크립트 생성 완료\n");
+
+            // GameManager 스크립트 추출
+            String gameManagerScriptContent = gameManagerResult.entrySet().iterator().next().getValue().getAsString();
+
+            // 2. 개별 오브젝트 스크립트들 생성 (비동기로 병렬 처리)
+            JsonObject allScripts = new JsonObject();
+            // GameManager 추가
+            allScripts.add("GameManager.cs", gameManagerResult.entrySet().iterator().next().getValue());
+
+            // 각 오브젝트별 비동기 스크립트 생성 태스크 생성
+            List<CompletableFuture<Map.Entry<String, JsonElement>>> scriptTasks = new ArrayList<>();
+
+            for (JsonElement dataElement : datasArray) {
+                JsonObject dataObj = dataElement.getAsJsonObject();
+                String objectName = dataObj.get("name").getAsString();
+
+                // 비동기 태스크 생성 및 리스트에 추가
+                CompletableFuture<Map.Entry<String, JsonElement>> scriptTask = CompletableFuture.supplyAsync(() -> {
+                    log.info("{} 스크립트 생성 중...", objectName);
+                    processLogBuilder.append("[INFO] ").append(objectName).append(" 스크립트 생성 시작\n");
+
+                    JsonObject individualResult = Main.generateIndividualScript(datasArray.toString(), gameManagerScriptContent, objectName);
+                    LogEntry individualLog = LogEntry.create("INDIVIDUAL_SCRIPT_" + objectName,
+                            "Target: " + objectName, individualResult.toString());
+                    processLogBuilder.append(individualLog.format()).append("\n");
+
+                    log.info("{} 스크립트 생성 완료", objectName);
+                    processLogBuilder.append("[INFO] ").append(objectName).append(" 스크립트 생성 완료\n");
+
+                    // 결과를 Map.Entry 형태로 반환
+                    return individualResult.entrySet().iterator().next();
+                });
+
+                scriptTasks.add(scriptTask);
+            }
+
+            // 모든 스크립트 생성 태스크가 완료될 때까지 대기
+            CompletableFuture<Void> allOf = CompletableFuture.allOf(scriptTasks.toArray(new CompletableFuture[0]));
+            try {
+                // 모든 태스크 완료 대기 (최대 5분)
+                allOf.get(5, TimeUnit.MINUTES);
+
+                // 완료된 결과 수집
+                for (CompletableFuture<Map.Entry<String, JsonElement>> task : scriptTasks) {
+                    Map.Entry<String, JsonElement> entry = task.get();
+                    allScripts.add(entry.getKey(), entry.getValue());
+                }
+
+                log.info("모든 오브젝트 스크립트 생성 완료 - 총 {}개", scriptTasks.size());
+            } catch (Exception e) {
+                log.error("스크립트 생성 대기 중 오류 발생: {}", e.getMessage(), e);
+                processLogBuilder.append("[ERROR] 스크립트 생성 대기 중 오류 발생: ").append(e.getMessage()).append("\n");
+
+                // 이미 완료된 태스크의 결과만 수집
+                for (CompletableFuture<Map.Entry<String, JsonElement>> task : scriptTasks) {
+                    if (task.isDone() && !task.isCompletedExceptionally()) {
+                        try {
+                            Map.Entry<String, JsonElement> entry = task.get();
+                            allScripts.add(entry.getKey(), entry.getValue());
+                        } catch (Exception ex) {
+                            // 개별 태스크 결과 가져오기 오류는 무시하고 계속 진행
+                        }
+                    }
+                }
+            }
+
+            log.info("모든 스크립트 생성 완료 - 소요시간: {}ms", (System.currentTimeMillis() - scriptStartTime));
+            processLogBuilder.append("[INFO] 모든 스크립트 생성 완료 - 소요시간: ").append(System.currentTimeMillis() - scriptStartTime).append("ms\n");
 
             String combinedLog = processLogBuilder.toString();
 
-            System.out.println("[INFO] 룸 생성 프로세스 성공 - 총 소요시간: " + (System.currentTimeMillis() - startTime) + "ms");
+            log.info("룸 생성 프로세스 성공 - 총 소요시간: {}ms", (System.currentTimeMillis() - startTime));
             processLogBuilder.append("[INFO] 룸 생성 프로세스 성공 - 총 소요시간: ").append(System.currentTimeMillis() - startTime).append("ms\n");
-            return ProcessResult.success(combinedLog, scenarioResult, scriptResult);
+            return ProcessResult.success(combinedLog, scenarioResult, allScripts);
+
         } catch (Exception e) {
             String errorMsg = "[ERROR] 룸 생성 중 오류 발생 - 소요시간: " + (System.currentTimeMillis() - startTime) + "ms";
-            System.out.println(errorMsg);
+            log.error("룸 생성 중 오류 발생 - 소요시간: {}ms", (System.currentTimeMillis() - startTime));
             processLogBuilder.append(errorMsg).append("\n");
 
             StringBuilder stackTrace = new StringBuilder(e.toString());
@@ -265,47 +341,49 @@ public class UndertowRoomCreateHandler implements HttpHandler {
                 stackTrace.append("\n    at ").append(element.toString());
             }
 
-            System.err.println("[ERROR] 오류 내용: " + e);
+            log.error("오류 내용: {}", e);
             processLogBuilder.append("[ERROR] 오류 내용: ").append(stackTrace).append("\n");
 
-            // 오류가 발생했더라도 지금까지 수집된 모든 로그를 저장
-            com.febrie.util.LogManager.logFailure("API 호출 실패 로그:\n" + processLogBuilder.toString());
+            com.febrie.util.LogUtility.writeErrorLog("API 호출 실패 로그:\n" + processLogBuilder.toString());
 
             return ProcessResult.error(processLogBuilder.toString(), "[Error] " + e.getMessage());
         }
     }
 
-    private void processKeywordsForMeshy(String puid, JsonObject scenarioResult) {
-        try {
-            System.out.println("[INFO] 시나리오 키워드로 3D 모델 생성 처리 시작 - PUID: " + puid);
-            MeshyModelService.getInstance().processScenarioKeywords(puid, scenarioResult);
-        } catch (Exception e) {
-            System.out.println("[ERROR] 3D 모델 생성 처리 중 오류: " + e.getMessage());
-        }
+    private CompletableFuture<Void> processKeywordsForMeshy(String puid, JsonObject scenarioResult) {
+        return CompletableFuture.runAsync(() -> {
+            try {
+                log.info("시나리오 키워드로 3D 모델 생성 처리 시작 - PUID: {}", puid);
+                MeshyModelService.getInstance().processScenarioKeywords(puid, scenarioResult);
+                log.info("3D 모델 생성 처리가 백그라운드에서 계속 진행됩니다 - PUID: {}", puid);
+            } catch (Exception e) {
+                log.error("3D 모델 생성 처리 중 오류: {}", e.getMessage(), e);
+            }
+        });
     }
 
     private void saveResults(JsonRoomData data, @NotNull ProcessResult result, String filePath) {
         long startTime = System.currentTimeMillis();
-        System.out.println("[INFO] 결과 저장 시작 - 상태: " + (result.isSuccess() ? "성공" : "실패"));
+        log.info("결과 저장 시작 - 상태: {}", (result.isSuccess() ? "성공" : "실패"));
         try {
             if (result.isSuccess()) {
                 saveSuccessResults(data, result, filePath);
             } else {
-                System.out.println("[INFO] 에러 결과 저장 중...");
+                log.info("에러 결과 저장 중...");
                 String errorFilePath = buildFilePath(data, true);
                 saveErrorResults(data, result.combinedLog(), errorFilePath);
             }
         } catch (Exception e) {
-            System.out.println("[ERROR] 결과 저장 중 오류 발생 - 소요시간: " + (System.currentTimeMillis() - startTime) + "ms");
-            System.err.println("[ERROR] 오류 내용: " + e);
+            log.error("결과 저장 중 오류 발생 - 소요시간: {}ms", (System.currentTimeMillis() - startTime));
+            log.error("오류 내용: {}", e);
             handleSaveError(data, e);
         }
-        System.out.println("[INFO] 결과 저장 완료 - 총 소요시간: " + (System.currentTimeMillis() - startTime) + "ms");
+        log.info("결과 저장 완료 - 총 소요시간: {}ms", (System.currentTimeMillis() - startTime));
     }
 
     private void saveSuccessResults(@NotNull JsonRoomData data, @NotNull ProcessResult result, String filePath) {
         long startTime = System.currentTimeMillis();
-        System.out.println("[INFO] 성공 결과 저장 시작 - UUID: " + data.uuid() + ", PUID: " + data.puid());
+        log.info("성공 결과 저장 시작 - UUID: {}, PUID: {}", data.uuid(), data.puid());
 
         RoomCreationLogData firebaseLog = RoomCreationLogData.success(
                 data.uuid(), data.puid(), data.theme(),
@@ -320,18 +398,18 @@ public class UndertowRoomCreateHandler implements HttpHandler {
                     "UUID: %s, PUID: %s, Theme: %s\n%s",
                     data.uuid(), data.puid(), data.theme(), result.combinedLog()
             );
-            com.febrie.util.LogManager.logSuccess(logContent);
-            System.out.println("[INFO] 성공 로그 저장 완료 - 소요시간: " +
-                    (System.currentTimeMillis() - fileStartTime) + "ms");
+            com.febrie.util.LogUtility.writeSuccessLog(logContent);
+            log.info("성공 로그 저장 완료 - 소요시간: {}ms",
+                    (System.currentTimeMillis() - fileStartTime));
         }).join();
 
-        System.out.println("[INFO] 성공 결과 저장 작업 요청 완료 - 소요시간: " +
-                (System.currentTimeMillis() - startTime) + "ms");
+        log.info("성공 결과 저장 작업 요청 완료 - 소요시간: {}ms",
+                (System.currentTimeMillis() - startTime));
     }
 
     private void saveErrorResults(@NotNull JsonRoomData data, String errorLog, String errorFilePath) {
         long startTime = System.currentTimeMillis();
-        System.out.println("[INFO] 에러 결과 저장 시작 - UUID: " + data.uuid() + ", PUID: " + data.puid());
+        log.info("에러 결과 저장 시작 - UUID: {}, PUID: {}", data.uuid(), data.puid());
 
         // Firebase에 에러 로그 저장 (FirebaseLogger 사용)
         RoomCreationLogData errorData = RoomCreationLogData.error(data.uuid(), data.puid(), data.theme(), errorLog);
@@ -340,14 +418,14 @@ public class UndertowRoomCreateHandler implements HttpHandler {
         // 파일에 에러 로그 저장 (별도 스레드로 비동기 실행)
         CompletableFuture.runAsync(() -> {
             long fileStartTime = System.currentTimeMillis();
-            System.out.println("[INFO] 에러 로그 파일 생성 중: " + errorFilePath);
+            log.info("에러 로그 파일 생성 중: {}", errorFilePath);
             fileManager.createFile(errorFilePath, errorLog);
-            System.out.println("[INFO] 에러 로그 파일 생성 완료 - 소요시간: " +
-                    (System.currentTimeMillis() - fileStartTime) + "ms");
+            log.info("에러 로그 파일 생성 완료 - 소요시간: {}ms",
+                    (System.currentTimeMillis() - fileStartTime));
         });
 
-        System.out.println("[INFO] 에러 결과 저장 작업 요청 완료 - 소요시간: " +
-                (System.currentTimeMillis() - startTime) + "ms");
+        log.info("에러 결과 저장 작업 요청 완료 - 소요시간: {}ms",
+                (System.currentTimeMillis() - startTime));
     }
 
     private void handleSaveError(JsonRoomData data, @NotNull Exception e) {
@@ -360,7 +438,7 @@ public class UndertowRoomCreateHandler implements HttpHandler {
             RoomCreationLogData errorLog = RoomCreationLogData.error(data.uuid(), data.puid(), data.theme(), "Logging process failed: " + e.getMessage());
             FirebaseLogger.saveServerLogSync(errorLog);
         } catch (Exception ex) {
-            System.err.println("[SEVERE] 로그 저장 중 추가 오류 발생: " + ex);
+            log.error("[SEVERE] 로그 저장 중 추가 오류 발생: {}", ex);
         }
     }
 

@@ -90,14 +90,20 @@ public class Main {
         log.info("애플리케이션 종료 완료");
     }
 
-    public static JsonObject scenario(String puid, String theme, String[] keywords, String roomUrl) {
+    public static JsonObject scenario(String puid, String theme, String[] keywords) {
         long startTime = System.currentTimeMillis();
         log.info("시나리오 생성 요청 시작 - PUID: {}, 테마: {}", puid, theme);
 
         PromptConfig config = PromptConfig.getInstance();
-        String requestContent = "uid: " + puid + ", Theme: " + theme + ", " + "keywords: [" + String.join(", ", keywords) + "], room_URL: " + roomUrl;
+        String requestContent = "uid: " + puid + ", Theme: " + theme + ", " + "keywords: [" + String.join(", ", keywords) + "]";
 
-        MessageCreateParams params = MessageCreateParams.builder().model(config.getModelName()).maxTokens(config.getMaxTokens()).temperature(config.getScenarioTemperature()).system(config.getScenarioSystemPrompt()).addUserMessage(requestContent).build();
+        MessageCreateParams params = MessageCreateParams.builder()
+                .model(config.getModelName())
+                .maxTokens(config.getMaxTokens())
+                .temperature(config.getScenarioTemperature())
+                .system(config.getScenarioSystemPrompt())
+                .addUserMessage(requestContent)
+                .build();
 
         log.info("Claude API 요청 중...");
         long apiStartTime = System.currentTimeMillis();
@@ -107,10 +113,10 @@ public class Main {
             log.info("Claude API 응답 수신 - 소요시간: {}ms", (System.currentTimeMillis() - apiStartTime));
         } catch (Exception e) {
             log.error("Claude API 요청 실패: {}", e.getMessage(), e);
-
             com.febrie.util.ErrorLogger.logApiFailure("시나리오 생성 API 호출", requestContent, "응답 없음 (API 예외)", e);
-            throw e; // 예외를 상위로 다시 던져서 처리하도록 함
+            throw e;
         }
+
         Optional<TextBlock> firstTextBlock = message.content().getFirst().text();
         if (firstTextBlock.isEmpty()) throw new IllegalArgumentException("First text block is empty");
         JsonObject result = JsonParser.parseString(removeJson(firstTextBlock.get().text())).getAsJsonObject();
@@ -119,39 +125,74 @@ public class Main {
         return result;
     }
 
-    public static JsonObject gScripts(String puzzle_data, String roomPrefabUrl) {
+    // 새로운 통합 스크립트 생성 메서드
+    public static JsonObject generateScript(String puzzleData, String roomPrefabUrl, String gameManagerScript,
+                                            String targetObjectName, boolean isGameManager) {
         long startTime = System.currentTimeMillis();
-        log.info("스크립트 생성 요청 시작");
+        String logPrefix = isGameManager ? "GameManager" : "개별 오브젝트(" + targetObjectName + ")";
+        log.info("{} 스크립트 생성 요청 시작", logPrefix);
 
         PromptConfig config = PromptConfig.getInstance();
-        String requestContent = "puzzle data: " + puzzle_data + ",Room Prefab: " + roomPrefabUrl;
+        String requestContent;
+        String systemPrompt;
 
-        MessageCreateParams params = MessageCreateParams.builder().model(config.getModelName()).maxTokens(config.getMaxTokens()).temperature(config.getScriptTemperature()).system(config.getScriptSystemPrompt()).addUserMessage(requestContent).build();
+        if (isGameManager) {
+            // GameManager 생성용
+            requestContent = "All puzzle object data: " + puzzleData + ", Room Prefab: " + roomPrefabUrl;
+            systemPrompt = config.getGameManagerSystemPrompt();
+        } else {
+            // 개별 오브젝트 생성용
+            requestContent = "Target object: " + targetObjectName +
+                    ", All puzzle object data: " + puzzleData +
+                    ", GameManager script: " + gameManagerScript;
+            systemPrompt = config.getIndividualObjectSystemPrompt();
+        }
 
-        log.info("Claude API 요청 중 (스크립트 생성)...");
+        MessageCreateParams params = MessageCreateParams.builder()
+                .model(config.getModelName())
+                .maxTokens(config.getMaxTokens())
+                .temperature(config.getScriptTemperature())
+                .system(systemPrompt)
+                .addUserMessage(requestContent)
+                .build();
+
+        log.info("Claude API 요청 중 ({} 스크립트 생성)...", logPrefix);
         long apiStartTime = System.currentTimeMillis();
         Message message;
         try {
             message = client.messages().create(params);
-            log.info("Claude API 응답 수신 (스크립트 생성) - 소요시간: {}ms", (System.currentTimeMillis() - apiStartTime));
+            log.info("Claude API 응답 수신 ({} 스크립트 생성) - 소요시간: {}ms",
+                    logPrefix, (System.currentTimeMillis() - apiStartTime));
         } catch (Exception e) {
-            log.error("스크립트 생성 API 요청 실패: {}", e.getMessage(), e);
-
-            // API 실패 정보를 상세히 로깅
-            com.febrie.util.ErrorLogger.logApiFailure("스크립트 생성 API 호출", requestContent, "응답 없음 (API 예외)", e);
-            throw e; // 예외를 상위로 다시 던져서 처리하도록 함
+            log.error("{} 스크립트 생성 API 요청 실패: {}", logPrefix, e.getMessage(), e);
+            com.febrie.util.ErrorLogger.logApiFailure(logPrefix + " 스크립트 생성 API 호출",
+                    requestContent, "응답 없음 (API 예외)", e);
+            throw e;
         }
+
         Optional<TextBlock> firstTextBlock = message.content().getFirst().text();
         if (firstTextBlock.isEmpty()) throw new IllegalArgumentException("First text block is empty");
-        System.out.println(removeJson(firstTextBlock.get().text()));
-        JsonObject result = JsonParser.parseString(removeJson(firstTextBlock.get().text())).getAsJsonObject();
-        log.info("스크립트 생성 완료 - 총 소요시간: {}ms", (System.currentTimeMillis() - startTime));
+
+        String responseText = firstTextBlock.get().text();
+        System.out.println(logPrefix + " 응답: " + responseText);
+
+        JsonObject result = JsonParser.parseString(removeJson(responseText)).getAsJsonObject();
+        log.info("{} 스크립트 생성 완료 - 총 소요시간: {}ms", logPrefix, (System.currentTimeMillis() - startTime));
         return result;
+    }
+
+    public static JsonObject generateGameManager(String puzzleData, String roomPrefabUrl) {
+        return generateScript(puzzleData, roomPrefabUrl, null, null, true);
+    }
+
+    public static JsonObject generateIndividualScript(String puzzleData, String gameManagerScript, String targetObjectName) {
+        return generateScript(puzzleData, null, gameManagerScript, targetObjectName, false);
     }
 
     @NotNull
     public static String removeJson(@NotNull String json) {
         if (json.contains("```json")) return json.substring(7, json.lastIndexOf("```"));
+        if (json.startsWith("[")) return "{" + json + "}";
         return json;
     }
 }

@@ -78,6 +78,12 @@ public class MeshyModelService {
         LocalDateTime startTime = LocalDateTime.now();
         processingTimeByPuid.put(puid, 0L);
 
+        // 이미 진행 중인 처리가 있는지 확인
+        if (tasksByPuid.containsKey(puid) && !tasksByPuid.get(puid).isEmpty()) {
+            log.warn("PUID {}에 대한 모델 생성 태스크가 이미 진행 중입니다. 기존 태스크를 유지합니다.", puid);
+            return;
+        }
+
         // 이미 존재하는 태스크 맵이 있으면 가져오고, 없으면 새로 생성
         Map<String, MeshyTask> tasks = tasksByPuid.computeIfAbsent(puid, k -> new ConcurrentHashMap<>());
 
@@ -105,29 +111,48 @@ public class MeshyModelService {
                 String modelName = keywordObj.get("name").getAsString();
                 String prompt = keywordObj.get("value").getAsString();
 
-                // 비동기로 모델 생성 태스크 처리
-                executor.submit(() -> {
+                // CompletableFuture로 비동기 처리 개선
+                CompletableFuture.runAsync(() -> {
                     try {
+                        log.info("모델 {} 생성 태스크 시작 (PUID: {})", modelName, puid);
                         processModelGeneration(puid, modelName, prompt, tasks);
+                        log.info("모델 {} 생성 태스크 완료 (PUID: {})", modelName, puid);
                     } catch (Exception e) {
                         log.error("모델 {} 생성 중 오류 발생: {}", modelName, e.getMessage(), e);
                     } finally {
                         latch.countDown();
+                        log.debug("모델 생성 카운트다운: {} (남은 태스크: {})", modelName, latch.getCount());
                     }
-                });
+                }, executor);
             }
 
+            // 주기적으로 진행 상황 로깅하기 위한 스케줄러 설정
+            ScheduledExecutorService progressLogger = Executors.newSingleThreadScheduledExecutor();
+            progressLogger.scheduleAtFixedRate(() -> {
+                long remaining = latch.getCount();
+                long completed = keywordCount - remaining;
+                if (remaining > 0) {
+                    log.info("PUID {}의 모델 생성 진행 상황: {}/{}개 완료 ({}%)", 
+                            puid, completed, keywordCount, Math.round((double)completed/keywordCount*100));
+                }
+            }, 30, 60, TimeUnit.SECONDS); // 30초 후 시작, 60초마다 로깅
+
             // 모든 태스크가 완료될 때까지 대기 (최대 30분)
-            boolean completed = latch.await(30, TimeUnit.MINUTES);
+            boolean allCompleted = latch.await(30, TimeUnit.MINUTES);
+            progressLogger.shutdown(); // 진행 상황 로깅 종료
 
             // 처리 시간 계산 및 저장
             long elapsedTime = Duration.between(startTime, LocalDateTime.now()).toMillis();
             processingTimeByPuid.put(puid, elapsedTime);
 
-            if (completed) {
-                log.info("PUID {}의 모든 모델 생성 태스크 완료. 총 소요 시간: {}ms", puid, elapsedTime);
+            if (allCompleted) {
+                log.info("PUID {}의 모든 모델 생성 태스크 완료. 총 소요 시간: {}ms, 생성된 모델 수: {}", 
+                        puid, elapsedTime, completedModelUrlsByPuid.getOrDefault(puid, new ConcurrentHashMap<>()).size());
             } else {
-                log.warn("PUID {}의 일부 모델 생성 태스크가 제한 시간 내에 완료되지 않았습니다.", puid);
+                long completed = keywordCount - latch.getCount();
+                log.warn("PUID {}의 일부 모델 생성 태스크가 제한 시간 내에 완료되지 않았습니다. 완료된 태스크: {}/{}, 생성된 모델 수: {}", 
+                        puid, completed, keywordCount, 
+                        completedModelUrlsByPuid.getOrDefault(puid, new ConcurrentHashMap<>()).size());
             }
 
         } catch (Exception e) {

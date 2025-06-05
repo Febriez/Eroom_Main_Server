@@ -55,7 +55,7 @@ public class ErrorLogger {
         sb.append("  모델 생성 API: Anthropic Claude, Meshy 3D\n");
 
         // 로그 파일에 저장
-        LogManager.logFailure(sb.toString());
+        LogUtility.writeErrorLog(sb.toString());
     }
 
     /**
@@ -87,7 +87,7 @@ public class ErrorLogger {
         }
 
         // 로그 파일에 저장
-        LogManager.logFailure(sb.toString());
+        LogUtility.writeErrorLog(sb.toString());
 
         // 디버그 로그에도 저장
         FileManager.getInstance().createFile(

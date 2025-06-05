@@ -47,13 +47,13 @@ public class ModelCallbackHandler implements HttpHandler {
 
             // 콘솔에 예쁘게 출력
             String prettyJson = gson.toJson(json);
-            System.out.println("\n=========== 모델 생성 콜백 수신 ===========\n");
-            System.out.println("상태: " + status);
-            System.out.println("PUID: " + puid);
-            System.out.println("시간: " + timestamp);
-            System.out.println("\n-- 콜백 데이터 --\n");
-            System.out.println(prettyJson);
-            System.out.println("\n==========================================\n");
+            log.info("\n=========== 모델 생성 콜백 수신 ===========\n" +
+                    "상태: {}\n" +
+                    "PUID: {}\n" +
+                    "시간: {}\n\n" +
+                    "-- 콜백 데이터 --\n{}\n" +
+                    "==========================================",
+                    status, puid, timestamp, prettyJson);
 
             // 응답 반환
             exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");

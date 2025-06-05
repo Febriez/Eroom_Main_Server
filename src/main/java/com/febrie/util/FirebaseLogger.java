@@ -69,7 +69,7 @@ public class FirebaseLogger {
             boolean isSuccess = logData.isSuccess();
             String logMessage = String.format("UUID: %s, PUID: %s, 상태: %s\n%s",
                     logData.getUuid(), logData.getPuid(), logData.getStatus(), logData.toJson());
-            LogManager.log(isSuccess, logMessage);
+            LogUtility.writeLog(isSuccess, logMessage);
         } catch (Exception e) {
             log.error("Firebase 로그 저장 실패: {}", e.getMessage(), e);
 
@@ -108,7 +108,7 @@ public class FirebaseLogger {
             }
 
             // 실패한 경우에도 로컬 로그 파일에 상세 오류 정보 저장
-            LogManager.logFailure(errorDetails.toString());
+            LogUtility.writeErrorLog(errorDetails.toString());
         }
     }
 }
