@@ -4,88 +4,79 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+
     <groupId>com.febrie</groupId>
-    <artifactId>Eroom_Main_Server</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <artifactId>eroom-server</artifactId>
+    <version>2.0.0</version>
+    <name>Eroom Server</name>
+    <description>Unity 3D 방탈출 룸 생성 서버</description>
+
 
     <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <undertow.version>2.3.18.Final</undertow.version>
-        <xnio.version>3.8.16.Final</xnio.version>
+        <java.version>21</java.version>
+        <gson.version>2.10.1</gson.version>
+        <logback.version>1.5.14</logback.version>
+        <lombok.version>1.18.38</lombok.version>
+        <firebase.version>9.5.0</firebase.version>
+        <okhttp.version>4.12.0</okhttp.version>
     </properties>
 
     <dependencies>
+        <!-- Undertow 서버 -->
         <dependency>
             <groupId>io.undertow</groupId>
             <artifactId>undertow-core</artifactId>
-            <version>${undertow.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.jboss.xnio</groupId>
-            <artifactId>xnio-api</artifactId>
-            <version>${xnio.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.jboss.xnio</groupId>
-            <artifactId>xnio-nio</artifactId>
-            <version>${xnio.version}</version>
+            <version>2.3.17.Final</version>
         </dependency>
 
-        <!-- JBoss Threads -->
-        <dependency>
-            <groupId>org.jboss.threads</groupId>
-            <artifactId>jboss-threads</artifactId>
-            <version>3.9.1</version>
-        </dependency>
-
-        <!-- Firebase Admin SDK -->
-        <dependency>
-            <groupId>com.google.firebase</groupId>
-            <artifactId>firebase-admin</artifactId>
-            <version>9.5.0</version>
-        </dependency>
-
-        <!-- SLF4J 로깅 -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-            <version>2.0.9</version>
-        </dependency>
+        <!-- Logback 명시적으로 추가 -->
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.13</version>
+            <version>${logback.version}</version>
         </dependency>
 
-        <!-- Anthropic AI Client -->
+        <!-- SLF4J API -->
         <dependency>
-            <groupId>com.anthropic</groupId>
-            <artifactId>anthropic-java</artifactId>
-            <version>2.0.0</version>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.12</version>
         </dependency>
 
-        <!-- JSON 처리 -->
+        <!-- Jansi 라이브러리 추가 (로그 컬러 지원) -->
+        <dependency>
+            <groupId>org.fusesource.jansi</groupId>
+            <artifactId>jansi</artifactId>
+            <version>2.4.1</version>
+        </dependency>
+
+        <!-- Gson 라이브러리 추가 -->
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
-            <version>2.13.1</version>
-        </dependency>
-
-        <!-- HTTP 클라이언트 -->
-        <dependency>
-            <groupId>com.squareup.okhttp3</groupId>
-            <artifactId>okhttp</artifactId>
-            <version>4.12.0</version>
+            <version>${gson.version}</version>
         </dependency>
 
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <version>1.18.34</version>
-            <scope>provided</scope>
+            <version>${lombok.version}</version>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- OkHttp 클라이언트 -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+            <version>${okhttp.version}</version>
+        </dependency>
+
+        <!-- Anthropic API 클라이언트 -->
+        <dependency>
+            <groupId>com.anthropic</groupId>
+            <artifactId>anthropic-java</artifactId>
+            <version>2.0.0</version>
         </dependency>
     </dependencies>
 
@@ -94,70 +85,11 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.12.1</version>
+                <version>3.11.0</version>
                 <configuration>
                     <source>21</source>
                     <target>21</target>
-                    <release>21</release>
                 </configuration>
-            </plugin>
-
-            <!-- Maven Shade Plugin with improved configuration -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.4.1</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <outputDirectory>${user.home}/Desktop/Claude_Server</outputDirectory>
-                            <finalName>Claude_Server</finalName>
-                            <transformers>
-                                <transformer
-                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.febrie.Main</mainClass>
-                                </transformer>
-                                <!-- 중복 리소스 처리 -->
-                                <transformer
-                                        implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
-                                <transformer
-                                        implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer"/>
-                            </transformers>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <!-- 중복되는 메타데이터 파일들 제외 -->
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                        <exclude>META-INF/MANIFEST.MF</exclude>
-                                        <exclude>META-INF/NOTICE</exclude>
-                                        <exclude>META-INF/NOTICE.txt</exclude>
-                                        <exclude>META-INF/LICENSE</exclude>
-                                        <exclude>META-INF/LICENSE.txt</exclude>
-                                        <exclude>META-INF/DEPENDENCIES</exclude>
-                                        <!-- 모듈 정보 중복 제거 -->
-                                        <exclude>META-INF/versions/*/module-info.class</exclude>
-                                        <exclude>module-info.class</exclude>
-                                        <!-- Netty 버전 정보 중복 제거 -->
-                                        <exclude>META-INF/io.netty.versions.properties</exclude>
-                                        <!-- Maven 메타데이터 제거 -->
-                                        <exclude>META-INF/maven/**</exclude>
-                                        <!-- Kotlin 모듈 중복 제거 -->
-                                        <exclude>META-INF/*.kotlin_module</exclude>
-                                        <!-- Mozilla 공용 접미사 목록 중복 제거 -->
-                                        <exclude>mozilla/public-suffix-list.txt</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                        </configuration>
-                    </execution>
-                </executions>
             </plugin>
         </plugins>
     </build>
