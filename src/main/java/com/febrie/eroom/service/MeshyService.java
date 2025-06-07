@@ -165,7 +165,7 @@ public class MeshyService {
                 if ("completed".equals(status)) {
                     return true;
                 } else if ("failed".equals(status)) {
-                    log.error("리소스 생성 실패: {}", responseJson);
+                    log.error("리소스 생성 실패: {}", responseJson.toString());
                     return false;
                 }
 
@@ -180,4 +180,18 @@ public class MeshyService {
         }
     }
 
+    @Nullable
+    private String getModelUrl(String resourceId, String apiKey) {
+        try {
+            JsonObject responseJson = getResourceStatus(resourceId, apiKey);
+            if (responseJson != null && responseJson.has("file_url")) {
+                return responseJson.get("file_url").getAsString();
+            }
+
+            return null;
+        } catch (Exception e) {
+            log.error("모델 URL 가져오는 중 오류 발생: {}", e.getMessage());
+            return null;
+        }
+    }
 }

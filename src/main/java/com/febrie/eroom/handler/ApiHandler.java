@@ -71,18 +71,17 @@ public class ApiHandler {
 
     @NotNull
     private String getRequestBody(@NotNull HttpServerExchange exchange) throws IOException {
-        try (var ignored = exchange.startBlocking()) {
-            try (InputStream inputStream = exchange.getInputStream()) {
-                StringBuilder body = new StringBuilder();
-                byte[] buffer = new byte[1024];
-                int read;
+        exchange.startBlocking();
+        try (InputStream inputStream = exchange.getInputStream()) {
+            StringBuilder body = new StringBuilder();
+            byte[] buffer = new byte[1024];
+            int read;
 
-                while ((read = inputStream.read(buffer)) > 0) {
-                    body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
-                }
-
-                return body.toString();
+            while ((read = inputStream.read(buffer)) > 0) {
+                body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
             }
+
+            return body.toString();
         }
     }
 

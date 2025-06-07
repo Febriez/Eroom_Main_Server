@@ -136,6 +136,41 @@ public class AnthropicService {
     }
 
     @Nullable
+    public String generateObjectScript(@NotNull String objectPrompt, @NotNull JsonObject requestData) {
+        try {
+            String objectName = requestData.get("object_name").getAsString();
+            log.info("{}의 스크립트 생성 시작", objectName);
+
+            MessageCreateParams params = createMessageParams(objectPrompt, requestData, "scriptTemperature");
+            Message response = getClient().messages().create(params);
+
+            String textContent = extractResponseText(response);
+            if (textContent != null) {
+                try {
+                    JsonObject jsonResponse = JsonParser.parseString(textContent).getAsJsonObject();
+
+                    for (String key : jsonResponse.keySet()) {
+                        if (key.equals(objectName)) {
+                            return jsonResponse.get(key).getAsString();
+                        }
+                    }
+
+                    log.error("스크립트 응답에 오브젝트 이름 키가 없습니다: {}", textContent);
+                } catch (Exception e) {
+                    log.error("객체 스크립트 파싱 중 오류 발생", e);
+                    return null;
+                }
+            }
+
+            log.error("객체 스크립트 생성 응답이 유효하지 않습니다");
+            return null;
+        } catch (Exception e) {
+            log.error("객체 스크립트 생성 중 오류 발생", e);
+            return null;
+        }
+    }
+
+    @Nullable
     public String generateBulkObjectScripts(@NotNull String bulkObjectPrompt, @NotNull JsonObject requestData) {
         try {
             log.info("일괄 오브젝트 스크립트 생성 시작");
