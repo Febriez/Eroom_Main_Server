@@ -78,10 +78,17 @@ public class RoomServiceImpl implements RoomService {
                 CompletableFuture<ModelGenerationResult> modelFuture = CompletableFuture.supplyAsync(() -> {
                     try {
                         String trackingId = meshyService.generateModel(modelPrompt, objectName, keyIndex);
+                        if (trackingId == null) {
+                            log.warn("{}의 모델 생성에 실패했거나 trackingId가 null입니다. 더미 ID 할당", objectName);
+                            // 모델 생성에 실패한 경우 더미 ID 할당
+                            trackingId = "pending-" + UUID.randomUUID().toString();
+                        }
                         return new ModelGenerationResult(objectName, trackingId);
                     } catch (Exception e) {
                         log.error("{}의 모델 생성 중 오류 발생", objectName, e);
-                        return null;
+                        // 오류 발생시에도 더미 ID 할당하여 추적 가능하게 함
+                        String fallbackId = "error-" + UUID.randomUUID().toString();
+                        return new ModelGenerationResult(objectName, fallbackId);
                     }
                 }, executorService);
 
@@ -104,12 +111,23 @@ public class RoomServiceImpl implements RoomService {
 
         List<String> objectScripts = new ArrayList<>();
 
-        // 모든 오브젝트 스크립트를 한 번에 생성
+        // 모든 오브젝트 스크립트를 한 번에 생성 (GameManager 제외)
         if (scenario.has("data") && scenario.get("data").isJsonArray()) {
             String bulkObjectPrompt = configJson.getAsJsonObject("prompts").get("bulkObject").getAsString();
 
+            // GameManager를 제외한 오브젝트 데이터만 추가
+            JsonArray allData = scenario.getAsJsonArray("data");
+            JsonArray filteredData = new JsonArray();
+
+            for (int i = 0; i < allData.size(); i++) {
+                JsonObject obj = allData.get(i).getAsJsonObject();
+                if (obj.has("name") && !"GameManager".equals(obj.get("name").getAsString())) {
+                    filteredData.add(obj);
+                }
+            }
+
             JsonObject bulkRequest = new JsonObject();
-            bulkRequest.add("objects_data", scenario.getAsJsonArray("data"));
+            bulkRequest.add("objects_data", filteredData);
             bulkRequest.addProperty("game_manager_script", gameManagerScript);
             if (scenario.has("scenario_data")) {
                 bulkRequest.add("scenario_context", scenario.get("scenario_data"));
@@ -119,10 +137,24 @@ public class RoomServiceImpl implements RoomService {
                 String bulkObjectScripts = anthropicService.generateBulkObjectScripts(bulkObjectPrompt, bulkRequest);
 
                 if (bulkObjectScripts != null) {
-                    JsonObject scriptsJson = JsonParser.parseString(bulkObjectScripts).getAsJsonObject();
-                    for (java.util.Map.Entry<String, JsonElement> entry : scriptsJson.entrySet()) {
-                        objectScripts.add(entry.getValue().getAsString());
+                    // 응답이 배열 또는 객체 형태로 올 수 있으므로 유연하게 처리
+                    JsonElement parsedElement = JsonParser.parseString(bulkObjectScripts);
+
+                    if (parsedElement.isJsonObject()) {
+                        JsonObject scriptsJson = parsedElement.getAsJsonObject();
+                        for (java.util.Map.Entry<String, JsonElement> entry : scriptsJson.entrySet()) {
+                            objectScripts.add(entry.getValue().getAsString());
+                        }
+                    } else if (parsedElement.isJsonArray()) {
+                        JsonArray scriptsArray = parsedElement.getAsJsonArray();
+                        for (int i = 0; i < scriptsArray.size(); i++) {
+                            JsonObject scriptObj = scriptsArray.get(i).getAsJsonObject();
+                            for (java.util.Map.Entry<String, JsonElement> entry : scriptObj.entrySet()) {
+                                objectScripts.add(entry.getValue().getAsString());
+                            }
+                        }
                     }
+
                     log.info("일괄 오브젝트 스크립트가 성공적으로 생성됨: {} 개의 스크립트", objectScripts.size());
                 } else {
                     throw new RuntimeException("일괄 오브젝트 스크립트 생성 실패");
@@ -138,12 +170,34 @@ public class RoomServiceImpl implements RoomService {
         for (CompletableFuture<ModelGenerationResult> future : modelFutures) {
             try {
                 ModelGenerationResult result = future.join();
-                if (result != null && result.getTrackingId() != null) {
-                    modelTrackingInfo.addProperty(result.getObjectName(), result.getTrackingId());
+                if (result != null) {
+                    String trackingId = result.getTrackingId();
+                    String objectName = result.getObjectName();
+
+                    if (trackingId != null) {
+                        modelTrackingInfo.addProperty(objectName, trackingId);
+                        log.info("모델 생성 결과 추적 정보 추가: {} -> {}", objectName, trackingId);
+                    } else {
+                        // trackingId가 null인 경우에도 더미 값을 추가
+                        String fallbackId = "no-tracking-" + UUID.randomUUID().toString();
+                        modelTrackingInfo.addProperty(objectName, fallbackId);
+                        log.warn("모델 trackingId가 null입니다. 더미 ID 할당: {} -> {}", objectName, fallbackId);
+                    }
+                } else {
+                    log.warn("모델 생성 결과가 null입니다");
                 }
             } catch (Exception e) {
                 log.error("모델 결과 수집 중 오류 발생", e);
+                // 오류 발생해도 빈 모델 추적 객체가 아닌 오류 정보를 포함한 객체 반환
+                modelTrackingInfo.addProperty("error_" + modelFutures.indexOf(future), "error-" + e.getMessage());
             }
+        }
+
+        // 모델 추적 정보가 비어있는 경우 기본값 추가
+        if (modelTrackingInfo.isEmpty()) {
+            log.warn("모델 추적 정보가 비어있습니다. 기본 상태 정보 추가");
+            modelTrackingInfo.addProperty("status", "no_models_generated");
+            modelTrackingInfo.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
         }
 
         JsonObject response = new JsonObject();

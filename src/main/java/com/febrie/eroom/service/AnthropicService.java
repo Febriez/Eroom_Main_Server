@@ -136,41 +136,6 @@ public class AnthropicService {
     }
 
     @Nullable
-    public String generateObjectScript(@NotNull String objectPrompt, @NotNull JsonObject requestData) {
-        try {
-            String objectName = requestData.get("object_name").getAsString();
-            log.info("{}의 스크립트 생성 시작", objectName);
-
-            MessageCreateParams params = createMessageParams(objectPrompt, requestData, "scriptTemperature");
-            Message response = getClient().messages().create(params);
-
-            String textContent = extractResponseText(response);
-            if (textContent != null) {
-                try {
-                    JsonObject jsonResponse = JsonParser.parseString(textContent).getAsJsonObject();
-
-                    for (String key : jsonResponse.keySet()) {
-                        if (key.equals(objectName)) {
-                            return jsonResponse.get(key).getAsString();
-                        }
-                    }
-
-                    log.error("스크립트 응답에 오브젝트 이름 키가 없습니다: {}", textContent);
-                } catch (Exception e) {
-                    log.error("객체 스크립트 파싱 중 오류 발생", e);
-                    return null;
-                }
-            }
-
-            log.error("객체 스크립트 생성 응답이 유효하지 않습니다");
-            return null;
-        } catch (Exception e) {
-            log.error("객체 스크립트 생성 중 오류 발생", e);
-            return null;
-        }
-    }
-
-    @Nullable
     public String generateBulkObjectScripts(@NotNull String bulkObjectPrompt, @NotNull JsonObject requestData) {
         try {
             log.info("일괄 오브젝트 스크립트 생성 시작");
@@ -180,48 +145,22 @@ public class AnthropicService {
 
             String textContent = extractResponseText(response);
             if (textContent != null) {
-                // 디버깅을 위해 응답 내용의 일부 출력
-                if (textContent.length() > 500) {
-                    log.debug("응답 내용(처음 500자): {}...", textContent.substring(0, 500));
-                    log.debug("응답 내용(마지막 500자): {}...", textContent.substring(Math.max(0, textContent.length() - 500)));
-                } else {
-                    log.debug("응답 내용 전체: {}", textContent);
-                }
-
+                log.debug("응답 내용 전체: {}", textContent);
                 try {
-                    // 문자열 정제 - 잘못된 이스케이프 시퀀스 등 수정 시도
-                    String cleanedText = textContent.replace("\\'", "'").replace("\\\"", "\"");
+                    JsonArray jsonArray = JsonParser.parseString(textContent).getAsJsonArray();
+                    JsonObject convertedObject = new JsonObject();
 
-                    // 응답이 유효한 JSON인지 확인
-                    JsonObject jsonResponse = JsonParser.parseString(cleanedText).getAsJsonObject();
-                    log.info("일괄 오브젝트 스크립트가 생성됨: {} 개의 스크립트", jsonResponse.keySet().size());
-                    return cleanedText;
-                } catch (Exception e) {
-                    log.error("일괄 객체 스크립트 파싱 중 오류 발생: {}", e.getMessage());
-                    // 오류 발생 위치 추정을 위한 로깅
-                    if (e.getMessage() != null && e.getMessage().contains("line") && e.getMessage().contains("column")) {
-                        String errorMsg = e.getMessage();
-                        log.error("JSON 파싱 오류 세부 정보: {}", errorMsg);
-
-                        // 오류 주변 컨텍스트 추출 시도
-                        try {
-                            int lineIndex = errorMsg.indexOf("line");
-                            int lineNumber = Integer.parseInt(errorMsg.substring(lineIndex + 5, errorMsg.indexOf(" ", lineIndex + 5)).trim());
-                            int columnIndex = errorMsg.indexOf("column");
-                            int columnNumber = Integer.parseInt(errorMsg.substring(columnIndex + 7, errorMsg.indexOf(" ", columnIndex + 7)).trim());
-
-                            String[] lines = textContent.split("\n");
-                            if (lineNumber <= lines.length) {
-                                String errorLine = lines[lineNumber - 1];
-                                log.error("오류 발생 라인 {}: {}", lineNumber, errorLine);
-                                if (columnNumber <= errorLine.length()) {
-                                    log.error("오류 발생 위치 표시: {}^", "-".repeat(Math.min(columnNumber - 1, 100)));
-                                }
-                            }
-                        } catch (Exception extractionError) {
-                            log.error("오류 컨텍스트 추출 실패: {}", extractionError.getMessage());
+                    for (int i = 0; i < jsonArray.size(); i++) {
+                        JsonObject scriptObject = jsonArray.get(i).getAsJsonObject();
+                        for (java.util.Map.Entry<String, JsonElement> entry : scriptObject.entrySet()) {
+                            convertedObject.add(entry.getKey(), entry.getValue());
                         }
                     }
+
+                    log.info("JSON 배열을 객체로 변환 완료: {} 개의 스크립트", convertedObject.keySet().size());
+                    return convertedObject.toString();
+                } catch (Exception e) {
+                    log.error("일괄 객체 스크립트 파싱 중 오류 발생: {}", e, e);
                     return null;
                 }
             }
