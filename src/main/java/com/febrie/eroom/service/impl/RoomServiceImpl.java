@@ -200,6 +200,12 @@ public class RoomServiceImpl implements RoomService {
             modelTrackingInfo.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
         }
 
+        // 1. scenario에서 keywords 필드 제거
+        if (scenario.has("keywords")) {
+            scenario.remove("keywords");
+        }
+
+        // 응답 객체 생성
         JsonObject response = new JsonObject();
         response.addProperty("uuid", request.getUuid());
         response.addProperty("puid", puid);
@@ -207,13 +213,34 @@ public class RoomServiceImpl implements RoomService {
         response.add("keywords", keywordsArray);
         response.addProperty("room_prefab", request.getRoomPrefab());
         response.add("scenario", scenario);
-        response.addProperty("game_manager_script", gameManagerScript);
 
-        JsonArray scriptsArray = new JsonArray();
+        // 2. game_manager_script 필드 제거 (최상위 필드로 추가하지 않음)
+        // 대신 object_scripts 객체에 포함시킴
+
+        // 3. object_scripts 구조 변경 (배열 → 객체)
+        JsonObject scriptsObject = new JsonObject();
+
+        // GameManager 스크립트 추가
+        scriptsObject.addProperty("GameManager.cs", gameManagerScript);
+
+        // 일반 오브젝트 스크립트 추가
+        // 파일명 추출을 위한 간단한 정규식 사용
+        java.util.regex.Pattern classPattern = java.util.regex.Pattern.compile("public class (\\w+)");
+
         for (String script : objectScripts) {
-            scriptsArray.add(script);
+            // 클래스 이름 추출 시도
+            java.util.regex.Matcher matcher = classPattern.matcher(script);
+            String className = "Object" + objectScripts.indexOf(script);
+
+            if (matcher.find()) {
+                className = matcher.group(1);
+            }
+
+            // 파일명.cs 형태로 저장
+            scriptsObject.addProperty(className + ".cs", script);
         }
-        response.add("object_scripts", scriptsArray);
+
+        response.add("object_scripts", scriptsObject);
 
         // 모델 URL 배열 대신 모델 추적 정보 객체 추가
         response.add("model_tracking", modelTrackingInfo);
