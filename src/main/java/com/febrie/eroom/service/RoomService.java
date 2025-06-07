@@ -8,5 +8,6 @@ import org.slf4j.LoggerFactory;
 public interface RoomService {
 
     Logger log = LoggerFactory.getLogger(RoomService.class);
+
     JsonObject createRoom(RoomCreationRequest request);
 }

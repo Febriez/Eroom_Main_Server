@@ -20,6 +20,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class RoomServiceImpl implements RoomService {
 
@@ -79,15 +81,13 @@ public class RoomServiceImpl implements RoomService {
                     try {
                         String trackingId = meshyService.generateModel(modelPrompt, objectName, keyIndex);
                         if (trackingId == null) {
-                            log.warn("{}의 모델 생성에 실패했거나 trackingId가 null입니다. 더미 ID 할당", objectName);
-                            // 모델 생성에 실패한 경우 더미 ID 할당
-                            trackingId = "pending-" + UUID.randomUUID().toString();
+                            log.warn("{}의 모델 생성에 실패했거나 trackingId가 null 입니다. 더미 ID 할당", objectName);
+                            trackingId = "pending-" + UUID.randomUUID();
                         }
                         return new ModelGenerationResult(objectName, trackingId);
                     } catch (Exception e) {
                         log.error("{}의 모델 생성 중 오류 발생", objectName, e);
-                        // 오류 발생시에도 더미 ID 할당하여 추적 가능하게 함
-                        String fallbackId = "error-" + UUID.randomUUID().toString();
+                        String fallbackId = "error-" + UUID.randomUUID();
                         return new ModelGenerationResult(objectName, fallbackId);
                     }
                 }, executorService);
@@ -111,11 +111,9 @@ public class RoomServiceImpl implements RoomService {
 
         List<String> objectScripts = new ArrayList<>();
 
-        // 모든 오브젝트 스크립트를 한 번에 생성 (GameManager 제외)
         if (scenario.has("data") && scenario.get("data").isJsonArray()) {
             String bulkObjectPrompt = configJson.getAsJsonObject("prompts").get("bulkObject").getAsString();
 
-            // GameManager를 제외한 오브젝트 데이터만 추가
             JsonArray allData = scenario.getAsJsonArray("data");
             JsonArray filteredData = new JsonArray();
 
@@ -137,7 +135,6 @@ public class RoomServiceImpl implements RoomService {
                 String bulkObjectScripts = anthropicService.generateBulkObjectScripts(bulkObjectPrompt, bulkRequest);
 
                 if (bulkObjectScripts != null) {
-                    // 응답이 배열 또는 객체 형태로 올 수 있으므로 유연하게 처리
                     JsonElement parsedElement = JsonParser.parseString(bulkObjectScripts);
 
                     if (parsedElement.isJsonObject()) {
@@ -178,34 +175,29 @@ public class RoomServiceImpl implements RoomService {
                         modelTrackingInfo.addProperty(objectName, trackingId);
                         log.info("모델 생성 결과 추적 정보 추가: {} -> {}", objectName, trackingId);
                     } else {
-                        // trackingId가 null인 경우에도 더미 값을 추가
-                        String fallbackId = "no-tracking-" + UUID.randomUUID().toString();
+                        String fallbackId = "no-tracking-" + UUID.randomUUID();
                         modelTrackingInfo.addProperty(objectName, fallbackId);
-                        log.warn("모델 trackingId가 null입니다. 더미 ID 할당: {} -> {}", objectName, fallbackId);
+                        log.warn("모델 trackingId가 null 입니다. 더미 ID 할당: {} -> {}", objectName, fallbackId);
                     }
                 } else {
-                    log.warn("모델 생성 결과가 null입니다");
+                    log.warn("모델 생성 결과가 null 입니다");
                 }
             } catch (Exception e) {
                 log.error("모델 결과 수집 중 오류 발생", e);
-                // 오류 발생해도 빈 모델 추적 객체가 아닌 오류 정보를 포함한 객체 반환
                 modelTrackingInfo.addProperty("error_" + modelFutures.indexOf(future), "error-" + e.getMessage());
             }
         }
 
-        // 모델 추적 정보가 비어있는 경우 기본값 추가
         if (modelTrackingInfo.isEmpty()) {
             log.warn("모델 추적 정보가 비어있습니다. 기본 상태 정보 추가");
             modelTrackingInfo.addProperty("status", "no_models_generated");
             modelTrackingInfo.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
         }
 
-        // 1. scenario에서 keywords 필드 제거
         if (scenario.has("keywords")) {
             scenario.remove("keywords");
         }
 
-        // 응답 객체 생성
         JsonObject response = new JsonObject();
         response.addProperty("uuid", request.getUuid());
         response.addProperty("puid", puid);
@@ -214,35 +206,25 @@ public class RoomServiceImpl implements RoomService {
         response.addProperty("room_prefab", request.getRoomPrefab());
         response.add("scenario", scenario);
 
-        // 2. game_manager_script 필드 제거 (최상위 필드로 추가하지 않음)
-        // 대신 object_scripts 객체에 포함시킴
-
-        // 3. object_scripts 구조 변경 (배열 → 객체)
         JsonObject scriptsObject = new JsonObject();
 
-        // GameManager 스크립트 추가
         scriptsObject.addProperty("GameManager.cs", gameManagerScript);
 
-        // 일반 오브젝트 스크립트 추가
-        // 파일명 추출을 위한 간단한 정규식 사용
-        java.util.regex.Pattern classPattern = java.util.regex.Pattern.compile("public class (\\w+)");
+        Pattern classPattern = Pattern.compile("public class (\\w+)");
 
         for (String script : objectScripts) {
-            // 클래스 이름 추출 시도
-            java.util.regex.Matcher matcher = classPattern.matcher(script);
+            Matcher matcher = classPattern.matcher(script);
             String className = "Object" + objectScripts.indexOf(script);
 
             if (matcher.find()) {
                 className = matcher.group(1);
             }
 
-            // 파일명.cs 형태로 저장
             scriptsObject.addProperty(className + ".cs", script);
         }
 
         response.add("object_scripts", scriptsObject);
 
-        // 모델 URL 배열 대신 모델 추적 정보 객체 추가
         response.add("model_tracking", modelTrackingInfo);
 
         response.addProperty("success", true);
