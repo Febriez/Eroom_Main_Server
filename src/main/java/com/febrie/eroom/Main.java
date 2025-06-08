@@ -21,8 +21,6 @@ public class Main {
 
             UndertowServer server = new UndertowServer(port);
             server.start();
-
-            // 셧다운 훅 추가
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 log.info("애플리케이션 종료 중...");
                 server.stop();

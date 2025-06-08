@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 public class MeshyService {
@@ -79,33 +80,46 @@ public class MeshyService {
             String apiKey = apiKeyConfig.getMeshyKey(keyIndex);
             log.info("{}의 모델 생성 시작, 키 인덱스: {}", objectName, keyIndex);
 
+            try {
+                String previewId = createPreview(prompt, apiKey);
+                if (previewId == null) {
+                    log.error("{}의 프리뷰 생성 실패", objectName);
+                    return "error-preview-" + UUID.randomUUID().toString();
+                }
 
-            String previewId = createPreview(prompt, apiKey);
-            if (previewId == null) {
-                log.error("{}의 프리뷰 생성 실패", objectName);
-                return null;
+                log.info("{}의 프리뷰가 ID: {}로 생성됨", objectName, previewId);
+
+                try {
+                    boolean previewCompleted = waitForCompletion(previewId, apiKey);
+                    if (!previewCompleted) {
+                        log.error("{}의 프리뷰 생성 시간 초과", objectName);
+                        return "timeout-preview-" + previewId;
+                    }
+
+                    try {
+                        String refineId = refineModel(previewId, apiKey);
+                        if (refineId == null) {
+                            log.error("{}의 모델 정제 실패", objectName);
+                            return "error-refine-" + previewId;
+                        }
+
+                        log.info("{}의 정제 작업이 ID: {}로 시작됨. 추적 ID를 반환합니다.", objectName, refineId);
+                        return refineId;
+                    } catch (Exception e) {
+                        log.error("{}의 모델 정제 단계에서 오류 발생: {}", objectName, e.getMessage());
+                        return "error-refine-exception-" + previewId;
+                    }
+                } catch (Exception e) {
+                    log.error("{}의 프리뷰 완료 대기 중 오류 발생: {}", objectName, e.getMessage());
+                    return "error-wait-exception-" + previewId;
+                }
+            } catch (Exception e) {
+                log.error("{}의 프리뷰 생성 단계에서 오류 발생: {}", objectName, e.getMessage());
+                return "error-preview-exception-" + UUID.randomUUID().toString();
             }
-
-            log.info("{}의 프리뷰가 ID: {}로 생성됨", objectName, previewId);
-            boolean previewCompleted = waitForCompletion(previewId, apiKey);
-            if (!previewCompleted) {
-                log.error("{}의 프리뷰 생성 시간 초과", objectName);
-                return null;
-            }
-
-            String refineId = refineModel(previewId, apiKey);
-            if (refineId == null) {
-                log.error("{}의 모델 정제 실패", objectName);
-                return null;
-            }
-
-            log.info("{}의 정제 작업이 ID: {}로 시작됨. 추적 ID를 반환합니다.", objectName, refineId);
-
-            // 정제 완료를 기다리지 않고 추적 ID를 즉시 반환
-            return refineId;
         } catch (Exception e) {
             log.error("{}의 모델 생성 중 오류 발생: {}", objectName, e.getMessage());
-            return null;
+            return "error-general-" + UUID.randomUUID().toString();
         }
     }
 

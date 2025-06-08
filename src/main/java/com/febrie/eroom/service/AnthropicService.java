@@ -7,9 +7,9 @@ import com.anthropic.models.messages.MessageCreateParams;
 import com.febrie.eroom.config.ApiKeyConfig;
 import com.febrie.eroom.util.ConfigUtil;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -31,9 +31,7 @@ public class AnthropicService {
     @NotNull
     private AnthropicClient getClient() {
         if (client == null) {
-            client = AnthropicOkHttpClient.builder()
-                    .apiKey(apiKeyConfig.getAnthropicKey())
-                    .build();
+            client = AnthropicOkHttpClient.builder().apiKey(apiKeyConfig.getAnthropicKey()).build();
         }
         return client;
     }
@@ -42,20 +40,13 @@ public class AnthropicService {
     private MessageCreateParams createMessageParams(String systemPrompt, @NotNull JsonObject userContent, String temperatureKey) {
         JsonObject config = configUtil.getConfig();
         JsonObject modelConfig = config.getAsJsonObject("model");
-        return MessageCreateParams.builder()
-                .maxTokens(modelConfig.get("maxTokens").getAsLong())
-                .addUserMessage(userContent.toString())
-                .model(modelConfig.get("name").getAsString())
-                .temperature(modelConfig.get(temperatureKey).getAsFloat())
-                .system(systemPrompt)
-                .build();
+        return MessageCreateParams.builder().maxTokens(modelConfig.get("maxTokens").getAsLong()).addUserMessage(userContent.toString()).model(modelConfig.get("name").getAsString()).temperature(modelConfig.get(temperatureKey).getAsFloat()).system(systemPrompt).build();
     }
 
     @Nullable
     private String extractResponseText(@NotNull Message response) {
-        if (!response.content().isEmpty() && response.content().getFirst().text().isPresent()) {
-            return response.content().getFirst().text().get().text();
-        }
+        if (!response.content().isEmpty() && response.content().get(0).text().isPresent())
+            return response.content().get(0).text().get().text().replace("```csharp", "").replace("```json", "").replace("```", "");
         return null;
     }
 
@@ -70,13 +61,6 @@ public class AnthropicService {
             String textContent = extractResponseText(response);
             if (textContent != null) {
                 try {
-                    if (textContent.length() > 300) {
-                        log.debug("파싱 시도할 JSON 내용(일부): {}...(총 {}자)",
-                                textContent.substring(0, 300), textContent.length());
-                    } else {
-                        log.debug("파싱 시도할 JSON 내용: {}", textContent);
-                    }
-
                     return JsonParser.parseString(textContent).getAsJsonObject();
                 } catch (Exception e) {
                     log.error("시나리오 JSON 파싱 실패: {}", e.getMessage());
@@ -101,34 +85,11 @@ public class AnthropicService {
             Message response = getClient().messages().create(params);
 
             String textContent = extractResponseText(response);
-            if (textContent != null) {
-                try {
-                    JsonObject jsonResponse = JsonParser.parseString(textContent).getAsJsonObject();
-
-                    if (jsonResponse.has("data") && jsonResponse.get("data").isJsonArray()) {
-                        JsonArray dataArray = jsonResponse.getAsJsonArray("data");
-                        for (JsonElement element : dataArray) {
-                            if (element.isJsonObject()) {
-                                JsonObject dataItem = element.getAsJsonObject();
-                                if (dataItem.has("name") && "GameManager".equals(dataItem.get("name").getAsString())) {
-                                    if (dataItem.has("value")) {
-                                        return dataItem.get("value").getAsString();
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    log.error("스크립트 응답에 GameManager 키가 없습니다: {}", textContent);
-                    return null;
-                } catch (Exception e) {
-                    log.error("게임 매니저 스크립트 파싱 중 오류 발생", e);
-                    return null;
-                }
+            if (textContent == null) {
+                log.error("스크립트 응답이 없습니다");
+                return null;
             }
-
-            log.error("게임 매니저 스크립트 생성 응답이 유효하지 않습니다");
-            return null;
+            return textContent;
         } catch (Exception e) {
             log.error("게임 매니저 스크립트 생성 중 오류 발생", e);
             return null;
@@ -148,27 +109,18 @@ public class AnthropicService {
                 log.debug("응답 내용 전체: {}", textContent);
                 try {
                     JsonArray jsonArray = JsonParser.parseString(textContent).getAsJsonArray();
-                    JsonObject convertedObject = new JsonObject();
+                    log.info("일괄 오브젝트 스크립트 파싱 완료: {} 개의 스크립트", jsonArray.size());
+                    return jsonArray.toString();
 
-                    for (int i = 0; i < jsonArray.size(); i++) {
-                        JsonObject scriptObject = jsonArray.get(i).getAsJsonObject();
-                        for (java.util.Map.Entry<String, JsonElement> entry : scriptObject.entrySet()) {
-                            convertedObject.add(entry.getKey(), entry.getValue());
-                        }
-                    }
-
-                    log.info("JSON 배열을 객체로 변환 완료: {} 개의 스크립트", convertedObject.keySet().size());
-                    return convertedObject.toString();
-                } catch (Exception e) {
-                    log.error("일괄 객체 스크립트 파싱 중 오류 발생: {}", e, e);
+                } catch (JsonSyntaxException e) {
+                    log.error("JSON 파싱 오류: {}\n응답 내용: {}", e.getMessage(), textContent);
                     return null;
                 }
             }
-
             log.error("일괄 오브젝트 스크립트 생성 응답이 유효하지 않습니다");
             return null;
         } catch (Exception e) {
-            log.error("일괄 오브젝트 스크립트 생성 중 오류 발생: {}", e.getMessage());
+            log.error("일괄 오브젝트 스크립트 생성 중 오류 발생: {}", e.getMessage(), e);
             return null;
         }
     }
