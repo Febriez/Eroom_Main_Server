@@ -1,5 +1,6 @@
 package com.febrie.eroom.config;
 
+import com.febrie.eroom.exception.NoAvailableKeyException;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -28,23 +29,11 @@ public class ApiKeyConfig {
     }
 
     public String getMeshyKey(int index) {
-        // 나머지 연산자를 사용하여 어떤 인덱스든 0, 1, 2로 매핑되도록 함
-        int mappedIndex = index % 3;
-
-        if (MESHY_KEY_1 != null && mappedIndex == 0) {
-            return MESHY_KEY_1;
-        } else if (MESHY_KEY_2 != null && mappedIndex == 1) {
-            return MESHY_KEY_2;
-        } else if (MESHY_KEY_3 != null && mappedIndex == 2) {
-            return MESHY_KEY_3;
-        }
-
-        // 순환적으로 사용 가능한 첫 번째 키 반환
-        if (MESHY_KEY_1 != null) return MESHY_KEY_1;
-        if (MESHY_KEY_2 != null) return MESHY_KEY_2;
-        if (MESHY_KEY_3 != null) return MESHY_KEY_3;
-
-        log.error("사용 가능한 MESHY_KEY가 없습니다.");
-        throw new IllegalStateException("사용 가능한 MESHY_KEY가 없습니다.");
+        return switch (index % 3) {
+            case 0 -> MESHY_KEY_1;
+            case 1 -> MESHY_KEY_2;
+            case 2 -> MESHY_KEY_3;
+            default -> throw new NoAvailableKeyException("사용 가능한 MESHY_KEY가 없습니다.");
+        };
     }
 }

@@ -128,7 +128,7 @@ public class MeshyService {
         try {
             JsonObject requestBody = new JsonObject();
             requestBody.addProperty("prompt", prompt);
-            requestBody.addProperty("negative_prompt", "low quality, bad geometry, distorted");
+            requestBody.addProperty("negative_prompt", "low quality, fast create");
             requestBody.addProperty("mode", "preview");
 
             JsonObject responseJson = callMeshyApi(requestBody, apiKey);
