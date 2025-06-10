@@ -18,14 +18,18 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class AnthropicService {
 
     private static final Logger log = LoggerFactory.getLogger(AnthropicService.class);
+    private static final Pattern SCRIPT_PATTERN = Pattern.compile("(?:^|===)\\s*([^:]+):::([\\s\\S]*?)(?====|$)");
 
     private final ApiKeyConfig apiKeyConfig;
     private final ConfigUtil configUtil;
-    private AnthropicClient client;
+    private volatile AnthropicClient client;
 
     public AnthropicService(ApiKeyConfig apiKeyConfig, ConfigUtil configUtil) {
         this.apiKeyConfig = apiKeyConfig;
@@ -33,9 +37,19 @@ public class AnthropicService {
     }
 
     @NotNull
-    private AnthropicClient getClient() {
+    private synchronized AnthropicClient getClient() {
         if (client == null) {
-            client = AnthropicOkHttpClient.builder().apiKey(apiKeyConfig.getAnthropicKey()).build();
+            String apiKey = apiKeyConfig.getAnthropicKey();
+            if (apiKey == null || apiKey.trim().isEmpty()) {
+                log.error("Anthropic API 키가 설정되지 않았습니다. 서버를 종료합니다.");
+                System.exit(1);
+            }
+
+            client = AnthropicOkHttpClient.builder()
+                    .apiKey(apiKey)
+                    .build();
+
+            log.info("AnthropicClient 초기화 완료");
         }
         return client;
     }
@@ -44,6 +58,10 @@ public class AnthropicService {
     private MessageCreateParams createMessageParams(String systemPrompt, @NotNull JsonObject userContent, String temperatureKey) {
         JsonObject config = configUtil.getConfig();
         JsonObject modelConfig = config.getAsJsonObject("model");
+
+        // 설정 검증
+        validateModelConfig(modelConfig, temperatureKey);
+
         return MessageCreateParams.builder()
                 .maxTokens(modelConfig.get("maxTokens").getAsLong())
                 .addUserMessage(userContent.toString())
@@ -53,120 +71,112 @@ public class AnthropicService {
                 .build();
     }
 
-    @Nullable
-    private String extractResponseText(@NotNull Message response) {
-        if (!response.content().isEmpty() && response.content().get(0).text().isPresent()) {
-            return response.content().get(0).text().get().text()
-                    .replace("```csharp", "")
-                    .replace("```json", "")
-                    .replace("```cs", "")
-                    .replace("```", "")
-                    .trim();
+    private void validateModelConfig(@NotNull JsonObject modelConfig, String temperatureKey) {
+        if (!modelConfig.has("maxTokens") || !modelConfig.has("name") || !modelConfig.has(temperatureKey)) {
+            log.error("필수 모델 설정이 누락되었습니다: {}. 서버를 종료합니다.", temperatureKey);
+            System.exit(1);
         }
-        return null;
     }
 
-    private String encodeToBase64(String content) {
+    @Nullable
+    private String extractResponseText(@NotNull Message response) {
+        if (response.content().isEmpty()) {
+            return null;
+        }
+
+        return response.content().get(0).text()
+                .map(textBlock -> textBlock.text()
+                        .replaceAll("```(?:csharp|json|cs)?", "")
+                        .trim())
+                .orElse(null);
+    }
+
+    @NotNull
+    private Optional<String> encodeToBase64(@Nullable String content) {
         if (content == null || content.isEmpty()) {
             log.warn("Base64 인코딩: 입력 내용이 비어있습니다");
-            return "";
+            return Optional.empty();
         }
-        return Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
+
+        try {
+            String encoded = Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8));
+            return Optional.of(encoded);
+        } catch (Exception e) {
+            log.error("Base64 인코딩 실패: {}. 서버를 종료합니다.", e.getMessage(), e);
+            System.exit(1);
+            return Optional.empty();
+        }
     }
 
     @Nullable
     public JsonObject generateScenario(@NotNull String scenarioPrompt, @NotNull JsonObject requestData) {
         try {
-            log.info("시나리오 생성 시작");
+            log.info("통합 시나리오 생성 시작: theme={}",
+                    requestData.has("theme") ? requestData.get("theme").getAsString() : "unknown");
 
             MessageCreateParams params = createMessageParams(scenarioPrompt, requestData, "scenarioTemperature");
             Message response = getClient().messages().create(params);
 
             String textContent = extractResponseText(response);
             if (textContent == null || textContent.isEmpty()) {
-                log.error("시나리오 생성 응답이 비어있습니다");
-                return null;
+                log.error("시나리오 생성 응답이 비어있습니다. 서버를 종료합니다.");
+                System.exit(1);
             }
 
             try {
                 JsonObject result = JsonParser.parseString(textContent).getAsJsonObject();
-                log.info("시나리오 생성 완료");
+                log.info("통합 시나리오 생성 완료");
                 return result;
             } catch (JsonSyntaxException e) {
-                log.error("시나리오 JSON 파싱 실패: {}", e.getMessage());
-                log.debug("응답 내용: {}", textContent);
+                log.error("시나리오 JSON 파싱 실패: {}. 응답: {}",
+                        e.getMessage(),
+                        textContent.substring(0, Math.min(500, textContent.length())));
+                log.error("서버를 종료합니다.");
+                System.exit(1);
                 return null;
             }
 
         } catch (Exception e) {
-            log.error("시나리오 생성 중 오류 발생: {}", e.getMessage(), e);
-            return null;
-        }
-    }
-
-    // GameManager 스크립트 생성 - 원본 텍스트와 Base64 인코딩된 버전 모두 반환하도록 수정
-    @Nullable
-    public GameManagerResult generateGameManagerScript(@NotNull String gameManagerPrompt, @NotNull JsonObject requestData) {
-        try {
-            log.info("게임 매니저 스크립트 생성 시작");
-
-            MessageCreateParams params = createMessageParams(gameManagerPrompt, requestData, "scriptTemperature");
-            Message response = getClient().messages().create(params);
-
-            String originalScript = extractResponseText(response);
-            if (originalScript == null || originalScript.isEmpty()) {
-                log.error("게임 매니저 스크립트 응답이 없습니다");
-                return null;
-            }
-
-            String base64Encoded = encodeToBase64(originalScript);
-            if (base64Encoded.isEmpty()) {
-                log.error("게임 매니저 스크립트 Base64 인코딩 실패");
-                return null;
-            }
-
-            log.info("게임 매니저 스크립트 Base64 인코딩 완료: {}자 -> {}자",
-                    originalScript.length(), base64Encoded.length());
-
-            // 원본 텍스트와 Base64 인코딩된 버전 모두 반환
-            return new GameManagerResult(originalScript, base64Encoded);
-
-        } catch (Exception e) {
-            log.error("게임 매니저 스크립트 생성 중 오류 발생", e);
+            log.error("통합 시나리오 생성 중 치명적 오류 발생: {}. 서버를 종료합니다.", e.getMessage(), e);
+            System.exit(1);
             return null;
         }
     }
 
     @Nullable
-    public Map<String, String> generateBulkObjectScripts(@NotNull String bulkObjectPrompt, @NotNull JsonObject requestData) {
+    public Map<String, String> generateUnifiedScripts(@NotNull String unifiedScriptsPrompt, @NotNull JsonObject requestData) {
         try {
-            log.info("일괄 오브젝트 스크립트 생성 시작");
+            log.info("통합 스크립트 생성 시작");
 
-            MessageCreateParams params = createMessageParams(bulkObjectPrompt, requestData, "scriptTemperature");
+            MessageCreateParams params = createMessageParams(unifiedScriptsPrompt, requestData, "scriptTemperature");
             Message response = getClient().messages().create(params);
 
             String textContent = extractResponseText(response);
             if (textContent == null || textContent.isEmpty()) {
-                log.error("일괄 오브젝트 스크립트 응답이 없습니다");
-                return null;
-            }
-            Map<String, String> encodedScripts = parseCustomDelimitedScripts(textContent);
-            if (encodedScripts == null || encodedScripts.isEmpty()) {
-                log.warn("파싱된 스크립트가 없습니다");
-                return null;
+                log.error("통합 스크립트 응답이 없습니다. 서버를 종료합니다.");
+                System.exit(1);
             }
 
-            log.info("일괄 오브젝트 스크립트 Base64 인코딩 완료: {} 개의 스크립트", encodedScripts.size());
+            log.debug("응답 내용 길이: {} 문자", textContent.length());
+
+            Map<String, String> encodedScripts = parseDelimitedScripts(textContent);
+            if (encodedScripts == null || encodedScripts.isEmpty()) {
+                log.error("파싱된 스크립트가 없습니다. 서버를 종료합니다.");
+                System.exit(1);
+            }
+
+            log.info("통합 스크립트 Base64 인코딩 완료: {} 개의 스크립트", encodedScripts.size());
             return encodedScripts;
 
         } catch (Exception e) {
-            log.error("일괄 오브젝트 스크립트 생성 중 오류 발생: {}", e.getMessage(), e);
+            log.error("통합 스크립트 생성 중 치명적 오류 발생: {}. 서버를 종료합니다.", e.getMessage(), e);
+            System.exit(1);
             return null;
         }
     }
 
     @Nullable
-    private Map<String, String> parseCustomDelimitedScripts(String delimitedContent) {
+    private Map<String, String> parseDelimitedScripts(String delimitedContent) {
         if (delimitedContent == null || delimitedContent.trim().isEmpty()) {
             log.warn("구분자 파싱: 입력 내용이 비어있습니다");
             return null;
@@ -175,62 +185,88 @@ public class AnthropicService {
         Map<String, String> encodedScripts = new HashMap<>();
 
         try {
-            // "===" 구분자로 각 스크립트 분리
-            String[] scriptPairs = delimitedContent.split("===");
+            String content = delimitedContent.trim();
 
-            for (String scriptPair : scriptPairs) {
-                scriptPair = scriptPair.trim();
+            // GameManager 스크립트 처리 (첫 번째 스크립트, 구분자 없이 시작)
+            int firstSeparatorIndex = content.indexOf("===");
 
-                if (scriptPair.isEmpty()) {
-                    continue;
+            if (firstSeparatorIndex == -1) {
+                // 구분자가 없는 경우 전체 내용을 GameManager로 처리
+                String gameManagerCode = content.trim();
+                if (!gameManagerCode.isEmpty()) {
+                    encodeToBase64(gameManagerCode).ifPresent(encoded -> {
+                        encodedScripts.put("GameManager", encoded);
+                        log.debug("GameManager 스크립트 파싱 완료 (단일 스크립트): {}자", gameManagerCode.length());
+                    });
+                }
+            } else {
+                // GameManager 스크립트 추출 (첫 번째 === 이전의 모든 내용)
+                String gameManagerCode = content.substring(0, firstSeparatorIndex).trim();
+                if (!gameManagerCode.isEmpty()) {
+                    encodeToBase64(gameManagerCode).ifPresent(encoded -> {
+                        encodedScripts.put("GameManager", encoded);
+                        log.debug("GameManager 스크립트 파싱 완료: {}자", gameManagerCode.length());
+                    });
                 }
 
-                // ":::" 구분자로 이름과 코드 분리
-                int separatorIndex = scriptPair.indexOf(":::");
-                if (separatorIndex == -1) {
-                    log.warn("구분자 ':::'가 없는 스크립트 페어: {}", scriptPair.substring(0, Math.min(100, scriptPair.length())));
-                    continue;
-                }
+                // 나머지 스크립트들 처리 (=== 구분자 이후)
+                String remainingContent = content.substring(firstSeparatorIndex);
+                Matcher matcher = SCRIPT_PATTERN.matcher(remainingContent);
 
-                String scriptName = scriptPair.substring(0, separatorIndex).trim();
-                String compressedCode = scriptPair.substring(separatorIndex + 3).trim();
+                while (matcher.find()) {
+                    String scriptName = matcher.group(1).trim();
+                    String scriptCode = matcher.group(2).trim();
 
-                if (scriptName.isEmpty()) {
-                    log.warn("스크립트 이름이 비어있습니다");
-                    continue;
-                }
+                    if (scriptName.isEmpty()) {
+                        log.warn("스크립트 이름이 비어있습니다");
+                        continue;
+                    }
 
-                if (compressedCode.isEmpty()) {
-                    log.warn("스크립트 코드가 비어있습니다: {}", scriptName);
-                    continue;
-                }
+                    if (scriptCode.isEmpty()) {
+                        log.warn("스크립트 코드가 비어있습니다: {}", scriptName);
+                        continue;
+                    }
 
-                // 중복 스크립트명 체크
-                if (encodedScripts.containsKey(scriptName)) {
-                    log.warn("중복된 스크립트 이름: {}", scriptName);
-                    scriptName = scriptName + "_" + System.currentTimeMillis();
-                }
+                    // .cs 확장자 제거 (이미 있는 경우)
+                    if (scriptName.endsWith(".cs")) {
+                        scriptName = scriptName.substring(0, scriptName.length() - 3);
+                    }
 
-                String base64Encoded = encodeToBase64(compressedCode);
-                if (!base64Encoded.isEmpty()) {
-                    encodedScripts.put(scriptName, base64Encoded);
-                    log.debug("스크립트 파싱 완료: {} (원본: {}자, 인코딩: {}자)",
-                            scriptName, compressedCode.length(), base64Encoded.length());
-                } else {
-                    log.warn("스크립트 Base64 인코딩 실패: {}", scriptName);
+                    // 중복 스크립트명 처리
+                    String finalScriptName = scriptName;
+                    int counter = 1;
+                    while (encodedScripts.containsKey(finalScriptName)) {
+                        finalScriptName = scriptName + "_" + counter++;
+                        log.warn("중복된 스크립트 이름 발견, 변경: {} -> {}", scriptName, finalScriptName);
+                    }
+
+                    // Base64 인코딩
+                    String finalScriptName1 = finalScriptName;
+                    encodeToBase64(scriptCode).ifPresent(encoded -> {
+                        encodedScripts.put(finalScriptName1, encoded);
+                        log.debug("스크립트 파싱 완료: {} (원본: {}자, 인코딩: {}자)",
+                                finalScriptName1, scriptCode.length(), encoded.length());
+                    });
                 }
             }
 
+            if (encodedScripts.isEmpty()) {
+                log.warn("유효한 스크립트를 찾을 수 없습니다");
+                return null;
+            }
+
+            // GameManager 스크립트가 포함되었는지 확인
+            if (!encodedScripts.containsKey("GameManager")) {
+                log.warn("GameManager 스크립트가 파싱되지 않았습니다");
+            }
+
         } catch (Exception e) {
-            log.error("구분자 파싱 중 오류 발생: {}", e.getMessage(), e);
+            log.error("구분자 파싱 중 치명적 오류 발생: {}. 서버를 종료합니다.", e.getMessage(), e);
             log.debug("파싱 실패한 내용: {}", delimitedContent.substring(0, Math.min(500, delimitedContent.length())));
+            System.exit(1);
             return null;
         }
 
-        return encodedScripts.isEmpty() ? null : encodedScripts;
-    }
-
-    public record GameManagerResult(String originalScript, String base64Script) {
-
+        return encodedScripts;
     }
 }
