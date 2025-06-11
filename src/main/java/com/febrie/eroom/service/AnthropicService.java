@@ -229,7 +229,7 @@ public class AnthropicService {
 
                     // .cs 확장자 제거 (이미 있는 경우)
                     if (scriptName.endsWith(".cs")) {
-                        scriptName = scriptName.substring(0, scriptName.length() - 3);
+                        scriptName = scriptName.substring(0, scriptName.length() - 3).replace("===", "");
                     }
 
                     // 중복 스크립트명 처리
