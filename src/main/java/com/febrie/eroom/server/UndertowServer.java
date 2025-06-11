@@ -4,6 +4,7 @@ import com.febrie.eroom.config.ApiKeyConfig;
 import com.febrie.eroom.config.GsonConfig;
 import com.febrie.eroom.handler.ApiHandler;
 import com.febrie.eroom.service.AnthropicService;
+import com.febrie.eroom.service.JobResultStore;
 import com.febrie.eroom.service.MeshyService;
 import com.febrie.eroom.service.RoomRequestQueueManager;
 import com.febrie.eroom.service.impl.RoomServiceImpl;
@@ -26,7 +27,7 @@ public class UndertowServer {
     private final RoomServiceImpl roomService;
 
     public UndertowServer(int port) {
-        // 서비스 초기화
+        // 1. 서비스 초기화
         GsonConfig gsonConfig = new GsonConfig();
         Gson gson = gsonConfig.createGson();
 
@@ -36,23 +37,28 @@ public class UndertowServer {
         AnthropicService anthropicService = new AnthropicService(apiKeyConfig, configUtil);
         MeshyService meshyService = new MeshyService(apiKeyConfig);
 
-        // RoomService 생성
+        // RoomService 구현체 생성
         roomService = new RoomServiceImpl(anthropicService, meshyService, configUtil);
 
-        // 큐 매니저 생성 (현재는 1개씩만 처리)
-        queueManager = new RoomRequestQueueManager(roomService, MAX_CONCURRENT_REQUESTS);
+        // 2. 중앙 결과 저장소 생성
+        JobResultStore resultStore = new JobResultStore();
+
+        // 3. 큐 매니저 생성 (JobResultStore 주입)
+        queueManager = new RoomRequestQueueManager(roomService, resultStore, MAX_CONCURRENT_REQUESTS);
 
         log.info("최대 동시 처리 요청 수: {}", MAX_CONCURRENT_REQUESTS);
 
-        // API 핸들러 생성
-        ApiHandler apiHandler = new ApiHandler(gson, queueManager);
+        // 4. API 핸들러 생성 (JobResultStore 주입)
+        ApiHandler apiHandler = new ApiHandler(gson, queueManager, resultStore);
 
-        // 라우팅 설정
+        // 5. 라우팅 설정 변경
         RoutingHandler routingHandler = Handlers.routing()
                 .get("/", apiHandler::handleRoot)
                 .get("/health", apiHandler::handleHealth)
-                .get("/queue/status", apiHandler::handleQueueStatus)  // 큐 상태 조회 엔드포인트 추가
-                .post("/room/create", apiHandler::handleRoomCreate);
+                .get("/queue/status", apiHandler::handleQueueStatus)
+                .post("/room/create", apiHandler::handleRoomCreate)
+                // 결과 조회를 위한 새로운 GET 엔드포인트 추가
+                .get("/room/result", apiHandler::handleRoomResult);
 
         // 서버 생성
         server = Undertow.builder()
@@ -77,7 +83,7 @@ public class UndertowServer {
                 queueManager.shutdown();
             }
 
-            // RoomService 종료
+            // RoomService 종료 (AutoCloseable 구현)
             if (roomService != null) {
                 try {
                     roomService.close();

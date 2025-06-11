@@ -9,5 +9,5 @@ public interface RoomService {
 
     Logger log = LoggerFactory.getLogger(RoomService.class);
 
-    JsonObject createRoom(RoomCreationRequest request);
+    JsonObject createRoom(RoomCreationRequest request, String ruid);
 }

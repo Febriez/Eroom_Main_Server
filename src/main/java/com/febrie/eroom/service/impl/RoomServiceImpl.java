@@ -40,35 +40,34 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @Override
-    public JsonObject createRoom(@NotNull RoomCreationRequest request) {
-        log.info("통합 방 생성 시작: theme={}, difficulty={}, keywords={}",
-                request.getTheme(), request.getValidatedDifficulty(), Arrays.toString(request.getKeywords()));
+    public JsonObject createRoom(@NotNull RoomCreationRequest request, String ruid) {
+        log.info("통합 방 생성 시작: ruid={}, user_uuid={}, theme={}, difficulty={}",
+                ruid, request.getUuid(), request.getTheme(), request.getValidatedDifficulty());
 
         try {
             validateRequest(request);
         } catch (IllegalArgumentException e) {
-            return createErrorResponse(request, e.getMessage());
+            return createErrorResponse(request, ruid, e.getMessage());
         }
 
         try {
-            String puid = generatePuid();
             JsonObject config = configUtil.getConfig();
 
-            JsonObject scenario = createIntegratedScenario(request, puid, config);
+            JsonObject scenario = createIntegratedScenario(request, ruid, config);
             List<CompletableFuture<ModelGenerationResult>> modelFutures = startModelGeneration(scenario);
             Map<String, String> allScripts = createUnifiedScripts(scenario, request.getRoomPrefab(), config);
             JsonObject modelTracking = waitForModels(modelFutures);
 
-            JsonObject response = buildFinalResponse(request, puid, scenario, allScripts, modelTracking);
-            log.info("통합 방 생성 완료: puid={}, 스크립트 수={}", puid, allScripts.size());
+            JsonObject response = buildFinalResponse(request, ruid, scenario, allScripts, modelTracking);
+            log.info("통합 방 생성 완료: ruid={}, 스크립트 수={}", ruid, allScripts.size());
             return response;
 
         } catch (RuntimeException e) {
-            log.error("통합 방 생성 중 비즈니스 오류 발생: {}", e.getMessage());
-            return createErrorResponse(request, e.getMessage());
+            log.error("통합 방 생성 중 비즈니스 오류 발생: ruid={}", ruid, e);
+            return createErrorResponse(request, ruid, e.getMessage());
         } catch (Exception e) {
-            log.error("통합 방 생성 중 시스템 오류 발생", e);
-            return createErrorResponse(request, "시스템 오류가 발생했습니다");
+            log.error("통합 방 생성 중 시스템 오류 발생: ruid={}", ruid, e);
+            return createErrorResponse(request, ruid, "시스템 오류가 발생했습니다");
         }
     }
 
@@ -109,7 +108,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private JsonObject createIntegratedScenario(@NotNull RoomCreationRequest request, String puid, JsonObject config) {
+    private JsonObject createIntegratedScenario(@NotNull RoomCreationRequest request, String ruid, JsonObject config) {
         try {
             String prompt = getPrompt(config, "scenario");
             JsonObject scenarioRequest = new JsonObject();
@@ -117,16 +116,14 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             JsonArray initialKeywords = createKeywordsArray(request.getKeywords());
 
             scenarioRequest.addProperty("uuid", request.getUuid());
-            scenarioRequest.addProperty("puid", puid);
+            scenarioRequest.addProperty("ruid", ruid);
             scenarioRequest.addProperty("theme", request.getTheme().trim());
             scenarioRequest.add("keywords", initialKeywords);
             scenarioRequest.addProperty("difficulty", request.getValidatedDifficulty());
             scenarioRequest.addProperty("room_prefab_url", request.getRoomPrefab().trim());
 
-            log.info("LLM에 시나리오 생성 요청. Theme: '{}', Difficulty: '{}', Initial Keywords: {}",
-                    request.getTheme().trim(),
-                    request.getValidatedDifficulty(),
-                    initialKeywords.toString());
+            log.info("LLM에 시나리오 생성 요청. ruid: '{}', Theme: '{}', Difficulty: '{}'",
+                    ruid, request.getTheme().trim(), request.getValidatedDifficulty());
 
             JsonObject scenario = anthropicService.generateScenario(prompt, scenarioRequest);
             if (scenario == null) {
@@ -135,9 +132,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
             validateScenario(scenario);
 
-            log.info("통합 시나리오 생성 완료. 난이도: {}, 오브젝트 설명 {}개",
-                    request.getValidatedDifficulty(),
-                    scenario.getAsJsonArray("object_instructions").size());
+            log.info("통합 시나리오 생성 완료. ruid: {}, 오브젝트 설명 {}개",
+                    ruid, scenario.getAsJsonArray("object_instructions").size());
 
             return scenario;
 
@@ -147,12 +143,12 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private JsonObject buildFinalResponse(@NotNull RoomCreationRequest request, String puid, @NotNull JsonObject scenario,
+    private JsonObject buildFinalResponse(@NotNull RoomCreationRequest request, String ruid, @NotNull JsonObject scenario,
                                           Map<String, String> allScripts, JsonObject tracking) {
 
         JsonObject response = new JsonObject();
         response.addProperty("uuid", request.getUuid());
-        response.addProperty("puid", puid);
+        response.addProperty("ruid", ruid);
         response.addProperty("theme", request.getTheme());
         response.addProperty("difficulty", request.getValidatedDifficulty());
         response.add("keywords", createKeywordsArray(request.getKeywords()));
@@ -197,11 +193,6 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             log.error("설정 검증 실패: {}. 서버를 종료합니다.", e.getMessage(), e);
             System.exit(1);
         }
-    }
-
-    @NotNull
-    private String generatePuid() {
-        return "room_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     }
 
     private void validateScenario(@NotNull JsonObject scenario) {
@@ -259,13 +250,11 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         for (int i = 0; i < objectInstructions.size(); i++) {
             JsonObject instruction = objectInstructions.get(i).getAsJsonObject();
 
-            // GameManager는 모델 생성에서 스킵
             if (instruction.has("type") && "game_manager".equals(instruction.get("type").getAsString())) {
                 log.debug("GameManager는 모델 생성에서 건너뜁니다.");
                 continue;
             }
 
-            // 이름과 비주얼 설명이 있는지 확인
             if (!instruction.has("name") || !instruction.has("visual_description")) {
                 log.warn("object_instructions[{}]에 'name' 또는 'visual_description'이 없습니다. 건너뜁니다.", i);
                 continue;
@@ -279,7 +268,6 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
                 continue;
             }
 
-            // 모델 생성 태스크 추가
             futures.add(createModelTask(visualDescription, objectName, i));
         }
 
@@ -445,9 +433,10 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private JsonObject createErrorResponse(@NotNull RoomCreationRequest request, String errorMessage) {
+    private JsonObject createErrorResponse(@NotNull RoomCreationRequest request, String ruid, String errorMessage) {
         JsonObject errorResponse = new JsonObject();
         errorResponse.addProperty("uuid", request.getUuid());
+        errorResponse.addProperty("ruid", ruid);
         errorResponse.addProperty("success", false);
         errorResponse.addProperty("error", errorMessage != null ? errorMessage : "알 수 없는 오류");
         errorResponse.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));

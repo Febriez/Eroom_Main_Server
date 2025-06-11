@@ -6,188 +6,144 @@ import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class RoomRequestQueueManager {
     private static final Logger log = LoggerFactory.getLogger(RoomRequestQueueManager.class);
 
-    // 동시 처리 가능한 요청 수 (나중에 서버 늘릴 때 UndertowServer에서 이 값 변경)
-    private final int maxConcurrentRequests;
+    // 큐에 저장될 작업 단위
+    private record QueuedRoomRequest(String ruid, RoomCreationRequest request) {
+    }
+
     private final ExecutorService executorService;
-    private final BlockingQueue<QueuedRequest> requestQueue;
-    private final AtomicInteger queuedRequests = new AtomicInteger(0);
+    private final BlockingQueue<QueuedRoomRequest> requestQueue;
+    private final RoomService roomService;
+    private final JobResultStore resultStore;
+    private final int maxConcurrentRequests;
+
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final AtomicInteger completedRequests = new AtomicInteger(0);
 
-    // 동시 실행 제어를 위한 Semaphore
-    private final Semaphore concurrencyLimiter;
-
-    // 실제 방 생성 로직을 처리하는 서비스
-    private final RoomService roomService;
-
-    public RoomRequestQueueManager(RoomService roomService, int maxConcurrentRequests) {
+    public RoomRequestQueueManager(RoomService roomService, JobResultStore resultStore, int maxConcurrentRequests) {
         this.roomService = roomService;
+        this.resultStore = resultStore;
         this.maxConcurrentRequests = maxConcurrentRequests;
         this.executorService = Executors.newFixedThreadPool(maxConcurrentRequests);
         this.requestQueue = new LinkedBlockingQueue<>();
-        this.concurrencyLimiter = new Semaphore(maxConcurrentRequests);
 
-        // 큐 처리 워커 시작
-        startQueueProcessor();
-
+        for (int i = 0; i < maxConcurrentRequests; i++) {
+            startQueueProcessor();
+        }
         log.info("RoomRequestQueueManager 초기화 완료. 최대 동시 처리 수: {}", maxConcurrentRequests);
     }
 
     /**
-     * 방 생성 요청을 큐에 추가하고 Future를 반환
+     * 방 생성 요청을 받아 ruid를 생성하고 큐에 추가한 뒤, ruid를 즉시 반환합니다.
+     *
+     * @param request 방 생성 요청
+     * @return 생성된 작업의 고유 ID (ruid)
      */
-    public CompletableFuture<JsonObject> submitRequest(RoomCreationRequest request) {
-        CompletableFuture<JsonObject> future = new CompletableFuture<>();
-        QueuedRequest queuedRequest = new QueuedRequest(request, future);
+    public String submitRequest(@NotNull RoomCreationRequest request) {
+        // 1. 서버에서 고유 ruid 생성
+        String ruid = "room_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
 
         try {
-            // offer() 대신 put() 사용 (큐가 가득 차면 대기)
-            // LinkedBlockingQueue는 용량 제한이 없으므로 실제로는 블로킹되지 않음
-            boolean added = requestQueue.offer(queuedRequest);
-            if (!added) {
-                // 만약 큐가 가득 찬 경우 (LinkedBlockingQueue에서는 발생하지 않음)
-                throw new RejectedExecutionException("요청 큐가 가득 참");
-            }
+            // 2. JobResultStore에 ruid로 작업 등록
+            resultStore.registerJob(ruid);
 
-            int queueSize = queuedRequests.incrementAndGet();
-            log.info("방 생성 요청 큐에 추가됨. UUID: {}, 현재 큐 크기: {}, 활성 요청: {}",
-                    request.getUuid(), queueSize, activeRequests.get());
-        } catch (Exception e) {
-            future.completeExceptionally(e);
-            log.error("요청을 큐에 추가하는 중 오류 발생", e);
+            // 3. 큐에 ruid와 요청을 함께 저장
+            requestQueue.put(new QueuedRoomRequest(ruid, request));
+            log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
+                    ruid, request.getUuid(), requestQueue.size());
+
+            // 4. 클라이언트에게 ruid 반환
+            return ruid;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("요청을 큐에 추가하는 중 인터럽트 발생: ruid={}", ruid, e);
+            throw new RuntimeException("Request processing was interrupted.", e);
         }
-
-        return future;
     }
 
-    /**
-     * 큐에서 요청을 가져와 처리하는 워커 스레드 시작
-     */
     private void startQueueProcessor() {
-        Thread processorThread = new Thread(() -> {
-            log.info("큐 프로세서 시작");
+        executorService.submit(() -> {
+            log.info("큐 프로세서 워커 시작: {}", Thread.currentThread().getName());
             while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    // 큐에서 요청 가져오기 (없으면 대기)
-                    QueuedRequest queuedRequest = requestQueue.take();
-                    queuedRequests.decrementAndGet();
-
-                    // Semaphore를 사용하여 동시 실행 제어 (busy-waiting 제거)
-                    concurrencyLimiter.acquire();
-
-                    // 요청 처리
-                    processRequest(queuedRequest);
-
+                    QueuedRoomRequest queuedRequest = requestQueue.take();
+                    processRequestInBackground(queuedRequest);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    log.info("큐 프로세서 중단됨");
+                    log.warn("큐 프로세서 워커 중단됨: {}", Thread.currentThread().getName());
                     break;
                 } catch (Exception e) {
-                    log.error("큐 프로세서에서 예기치 않은 오류 발생", e);
+                    log.error("큐 프로세서 루프에서 복구 불가능한 오류 발생", e);
                 }
-            }
-        }, "RoomRequestQueueProcessor");
-
-        processorThread.setDaemon(true);
-        processorThread.start();
-    }
-
-    /**
-     * 개별 요청 처리
-     */
-    private void processRequest(QueuedRequest queuedRequest) {
-        executorService.submit(() -> {
-            RoomCreationRequest request = queuedRequest.request;
-            CompletableFuture<JsonObject> future = queuedRequest.future;
-
-            int active = activeRequests.incrementAndGet();
-            long startTime = System.currentTimeMillis();
-
-            log.info("방 생성 시작. UUID: {}, 활성 요청: {}, 대기중: {}",
-                    request.getUuid(), active, queuedRequests.get());
-
-            try {
-                // 실제 방 생성 로직 실행
-                JsonObject result = roomService.createRoom(request);
-                future.complete(result);
-
-                long elapsed = System.currentTimeMillis() - startTime;
-                int completed = completedRequests.incrementAndGet();
-
-                log.info("방 생성 완료. UUID: {}, 소요 시간: {}ms, 총 완료: {}",
-                        request.getUuid(), elapsed, completed);
-
-            } catch (Exception e) {
-                future.completeExceptionally(e);
-                log.error("방 생성 실패. UUID: {}", request.getUuid(), e);
-            } finally {
-                activeRequests.decrementAndGet();
-                // Semaphore 해제
-                concurrencyLimiter.release();
             }
         });
     }
 
-    /**
-     * 현재 큐 상태 조회
-     */
+    private void processRequestInBackground(QueuedRoomRequest queuedRequest) {
+        String ruid = queuedRequest.ruid();
+        RoomCreationRequest request = queuedRequest.request();
+
+        activeRequests.incrementAndGet();
+        log.info("백그라운드 처리 시작. ruid: {}. 현재 활성 요청: {}", ruid, activeRequests.get());
+        resultStore.updateJobStatus(ruid, JobResultStore.Status.PROCESSING);
+
+        try {
+            // 변경된 RoomService 메소드 호출
+            JsonObject result = roomService.createRoom(request, ruid);
+            resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
+            int completedCount = completedRequests.incrementAndGet();
+            log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
+        } catch (Exception e) {
+            log.error("백그라운드 처리 중 오류 발생. ruid: {}", ruid, e);
+            JsonObject errorResponse = createErrorResponse(ruid, request.getUuid(), e.getMessage());
+            resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
+        } finally {
+            activeRequests.decrementAndGet();
+        }
+    }
+
+    @NotNull
+    private JsonObject createErrorResponse(@NotNull String ruid, String userUuid, String errorMessage) {
+        JsonObject errorResponse = new JsonObject();
+        errorResponse.addProperty("ruid", ruid);
+        errorResponse.addProperty("uuid", userUuid);
+        errorResponse.addProperty("success", false);
+        errorResponse.addProperty("error", errorMessage != null ? errorMessage : "An unknown error occurred during background processing.");
+        errorResponse.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
+        return errorResponse;
+    }
+
+    public record QueueStatus(int queued, int active, int completed, int maxConcurrent) {
+    }
+
     public QueueStatus getQueueStatus() {
         return new QueueStatus(
-                queuedRequests.get(),
+                requestQueue.size(),
                 activeRequests.get(),
                 completedRequests.get(),
-                maxConcurrentRequests
+                this.maxConcurrentRequests
         );
     }
 
-    /**
-     * 리소스 정리
-     */
     public void shutdown() {
-        log.info("RoomRequestQueueManager 종료 시작");
+        log.info("RoomRequestQueueManager 종료 시작...");
         executorService.shutdown();
         try {
             if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
+                log.warn("ExecutorService가 정상적으로 종료되지 않아 강제 종료합니다.");
                 executorService.shutdownNow();
             }
         } catch (InterruptedException e) {
+            log.error("ExecutorService 종료 대기 중 인터럽트 발생");
             executorService.shutdownNow();
             Thread.currentThread().interrupt();
         }
-        log.info("RoomRequestQueueManager 종료 완료");
-    }
-
-    /**
-     * 큐에 저장되는 요청 정보
-     */
-    private static class QueuedRequest {
-        final RoomCreationRequest request;
-        final CompletableFuture<JsonObject> future;
-        final long enqueuedTime;
-
-        QueuedRequest(RoomCreationRequest request, CompletableFuture<JsonObject> future) {
-            this.request = request;
-            this.future = future;
-            this.enqueuedTime = System.currentTimeMillis();
-        }
-    }
-
-    /**
-     * 큐 상태 정보
-     */
-    public record QueueStatus(int queued, int active, int completed, int maxConcurrent) {
-
-        @NotNull
-        @Override
-        public String toString() {
-            return String.format("QueueStatus{queued=%d, active=%d, completed=%d, maxConcurrent=%d}",
-                    queued, active, completed, maxConcurrent);
-        }
+        log.info("RoomRequestQueueManager 종료 완료.");
     }
 }
