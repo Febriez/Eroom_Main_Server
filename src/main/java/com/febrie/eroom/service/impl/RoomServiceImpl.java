@@ -199,6 +199,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         }
     }
 
+    @NotNull
     private String generatePuid() {
         return "room_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     }
