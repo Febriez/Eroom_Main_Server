@@ -1,6 +1,8 @@
-package com.febrie.eroom.service;
+package com.febrie.eroom.service.queue;
 
 import com.febrie.eroom.model.RoomCreationRequest;
+import com.febrie.eroom.service.JobResultStore;
+import com.febrie.eroom.service.room.RoomService;
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
@@ -10,7 +12,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class RoomRequestQueueManager {
+public class RoomRequestQueueManager implements QueueManager {
     private static final Logger log = LoggerFactory.getLogger(RoomRequestQueueManager.class);
 
     private record QueuedRoomRequest(String ruid, RoomCreationRequest request) {
@@ -38,16 +40,19 @@ public class RoomRequestQueueManager {
 
     private void initializeWorkers(int workerCount) {
         for (int i = 0; i < workerCount; i++) {
-            startQueueProcessor();
+            executorService.submit(this::runProcessorLoop);
         }
     }
 
-    public String submitRequest(@NotNull RoomCreationRequest request) {
+    @Override
+    public String submitRequest(RoomCreationRequest request) {
         String ruid = generateRuid();
 
         try {
             resultStore.registerJob(ruid);
-            enqueueRequest(ruid, request);
+            requestQueue.put(new QueuedRoomRequest(ruid, request));
+            log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
+                    ruid, request.getUuid(), requestQueue.size());
             return ruid;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -56,19 +61,36 @@ public class RoomRequestQueueManager {
         }
     }
 
+    @Override
+    public QueueStatus getQueueStatus() {
+        return new QueueStatus(
+                requestQueue.size(),
+                activeRequests.get(),
+                completedRequests.get(),
+                this.maxConcurrentRequests
+        );
+    }
+
+    @Override
+    public void shutdown() {
+        log.info("RoomRequestQueueManager 종료 시작...");
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(1, TimeUnit.SECONDS)) {
+                log.warn("ExecutorService가 정상적으로 종료되지 않아 강제 종료합니다.");
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            log.error("ExecutorService 종료 대기 중 인터럽트 발생");
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        log.info("RoomRequestQueueManager 종료 완료.");
+    }
+
     @NotNull
     private String generateRuid() {
         return "room_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-    }
-
-    private void enqueueRequest(String ruid, RoomCreationRequest request) throws InterruptedException {
-        requestQueue.put(new QueuedRoomRequest(ruid, request));
-        log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
-                ruid, request.getUuid(), requestQueue.size());
-    }
-
-    private void startQueueProcessor() {
-        executorService.submit(this::runProcessorLoop);
     }
 
     private void runProcessorLoop() {
@@ -87,42 +109,29 @@ public class RoomRequestQueueManager {
         }
     }
 
-    private void processRequestInBackground(@NotNull QueuedRoomRequest queuedRequest) {
+    private void processRequestInBackground(QueuedRoomRequest queuedRequest) {
         String ruid = queuedRequest.ruid();
         RoomCreationRequest request = queuedRequest.request();
 
-        markRequestAsActive(ruid);
+        activeRequests.incrementAndGet();
+        log.info("백그라운드 처리 시작. ruid: {}. 현재 활성 요청: {}", ruid, activeRequests.get());
+        resultStore.updateJobStatus(ruid, JobResultStore.Status.PROCESSING);
 
         try {
-            processRoomCreationRequest(ruid, request);
+            JsonObject result = roomService.createRoom(request, ruid);
+            resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
+            int completedCount = completedRequests.incrementAndGet();
+            log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
         } catch (Exception e) {
-            handleRequestProcessingFailure(ruid, request, e);
+            log.error("백그라운드 처리 중 오류 발생. ruid: {}", ruid, e);
+            JsonObject errorResponse = createErrorResponse(ruid, request.getUuid(), e.getMessage());
+            resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
         } finally {
             activeRequests.decrementAndGet();
         }
     }
 
-    private void markRequestAsActive(String ruid) {
-        activeRequests.incrementAndGet();
-        log.info("백그라운드 처리 시작. ruid: {}. 현재 활성 요청: {}", ruid, activeRequests.get());
-        resultStore.updateJobStatus(ruid, JobResultStore.Status.PROCESSING);
-    }
-
-    private void processRoomCreationRequest(String ruid, RoomCreationRequest request) {
-        JsonObject result = roomService.createRoom(request, ruid);
-        resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
-        int completedCount = completedRequests.incrementAndGet();
-        log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
-    }
-
-    private void handleRequestProcessingFailure(String ruid, @NotNull RoomCreationRequest request, Exception e) {
-        log.error("백그라운드 처리 중 오류 발생. ruid: {}", ruid, e);
-        JsonObject errorResponse = createErrorResponse(ruid, request.getUuid(), e.getMessage());
-        resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
-    }
-
-    @NotNull
-    private JsonObject createErrorResponse(@NotNull String ruid, String userUuid, String errorMessage) {
+    private JsonObject createErrorResponse(String ruid, String userUuid, String errorMessage) {
         JsonObject errorResponse = new JsonObject();
         errorResponse.addProperty("ruid", ruid);
         errorResponse.addProperty("uuid", userUuid);
@@ -130,41 +139,5 @@ public class RoomRequestQueueManager {
         errorResponse.addProperty("error", errorMessage != null ? errorMessage : "An unknown error occurred during background processing.");
         errorResponse.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
         return errorResponse;
-    }
-
-    public record QueueStatus(int queued, int active, int completed, int maxConcurrent) {
-    }
-
-    public QueueStatus getQueueStatus() {
-        return new QueueStatus(
-                requestQueue.size(),
-                activeRequests.get(),
-                completedRequests.get(),
-                this.maxConcurrentRequests
-        );
-    }
-
-    public void shutdown() {
-        log.info("RoomRequestQueueManager 종료 시작...");
-        executorService.shutdown();
-        try {
-            if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
-                forceShutdown();
-            }
-        } catch (InterruptedException e) {
-            handleShutdownInterruption();
-        }
-        log.info("RoomRequestQueueManager 종료 완료.");
-    }
-
-    private void forceShutdown() {
-        log.warn("ExecutorService가 정상적으로 종료되지 않아 강제 종료합니다.");
-        executorService.shutdownNow();
-    }
-
-    private void handleShutdownInterruption() {
-        log.error("ExecutorService 종료 대기 중 인터럽트 발생");
-        executorService.shutdownNow();
-        Thread.currentThread().interrupt();
     }
 }
