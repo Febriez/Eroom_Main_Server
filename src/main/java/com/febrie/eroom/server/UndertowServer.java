@@ -1,7 +1,9 @@
 package com.febrie.eroom.server;
 
 import com.febrie.eroom.config.ApiKeyConfig;
+import com.febrie.eroom.config.AuthConfig;
 import com.febrie.eroom.config.GsonConfig;
+import com.febrie.eroom.filter.ApiKeyAuthFilter;
 import com.febrie.eroom.handler.ApiHandler;
 import com.febrie.eroom.service.AnthropicService;
 import com.febrie.eroom.service.JobResultStore;
@@ -12,6 +14,7 @@ import com.febrie.eroom.util.ConfigUtil;
 import com.google.gson.Gson;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
+import io.undertow.server.HttpHandler;
 import io.undertow.server.RoutingHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +35,7 @@ public class UndertowServer {
         Gson gson = gsonConfig.createGson();
 
         ApiKeyConfig apiKeyConfig = new ApiKeyConfig();
+        AuthConfig authConfig = new AuthConfig();
         ConfigUtil configUtil = new ConfigUtil();
 
         AnthropicService anthropicService = new AnthropicService(apiKeyConfig, configUtil);
@@ -60,10 +64,13 @@ public class UndertowServer {
                 // 결과 조회를 위한 새로운 GET 엔드포인트 추가
                 .get("/room/result", apiHandler::handleRoomResult);
 
+        // 6. API 키 인증 필터 추가
+        HttpHandler apiKeyProtectedHandler = new ApiKeyAuthFilter(routingHandler, authConfig.getApiKey());
+
         // 서버 생성
         server = Undertow.builder()
                 .addHttpListener(port, "0.0.0.0")
-                .setHandler(routingHandler)
+                .setHandler(apiKeyProtectedHandler)
                 .build();
 
         log.info("Undertow 서버가 포트 {}에서 시작 준비 완료", port);
