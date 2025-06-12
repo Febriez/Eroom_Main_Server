@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RoomRequestQueueManager {
     private static final Logger log = LoggerFactory.getLogger(RoomRequestQueueManager.class);
 
-    // 큐에 저장될 작업 단위
     private record QueuedRoomRequest(String ruid, RoomCreationRequest request) {
     }
 
@@ -33,79 +32,93 @@ public class RoomRequestQueueManager {
         this.executorService = Executors.newFixedThreadPool(maxConcurrentRequests);
         this.requestQueue = new LinkedBlockingQueue<>();
 
-        for (int i = 0; i < maxConcurrentRequests; i++) {
-            startQueueProcessor();
-        }
+        initializeWorkers(maxConcurrentRequests);
         log.info("RoomRequestQueueManager 초기화 완료. 최대 동시 처리 수: {}", maxConcurrentRequests);
     }
 
-    /**
-     * 방 생성 요청을 받아 ruid를 생성하고 큐에 추가한 뒤, ruid를 즉시 반환합니다.
-     *
-     * @param request 방 생성 요청
-     * @return 생성된 작업의 고유 ID (ruid)
-     */
+    private void initializeWorkers(int workerCount) {
+        for (int i = 0; i < workerCount; i++) {
+            startQueueProcessor();
+        }
+    }
+
     public String submitRequest(@NotNull RoomCreationRequest request) {
-        // 1. 서버에서 고유 ruid 생성
-        String ruid = "room_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String ruid = generateRuid();
 
         try {
-            // 2. JobResultStore에 ruid로 작업 등록
             resultStore.registerJob(ruid);
-
-            // 3. 큐에 ruid와 요청을 함께 저장
-            requestQueue.put(new QueuedRoomRequest(ruid, request));
-            log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
-                    ruid, request.getUuid(), requestQueue.size());
-
-            // 4. 클라이언트에게 ruid 반환
+            enqueueRequest(ruid, request);
             return ruid;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("요청을 큐에 추가하는 중 인터럽트 발생: ruid={}", ruid, e);
-            throw new RuntimeException("Request processing was interrupted.", e);
+            throw new RuntimeException("요청 처리가 중단되었습니다.", e);
         }
+    }
+
+    @NotNull
+    private String generateRuid() {
+        return "room_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+    }
+
+    private void enqueueRequest(String ruid, RoomCreationRequest request) throws InterruptedException {
+        requestQueue.put(new QueuedRoomRequest(ruid, request));
+        log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
+                ruid, request.getUuid(), requestQueue.size());
     }
 
     private void startQueueProcessor() {
-        executorService.submit(() -> {
-            log.info("큐 프로세서 워커 시작: {}", Thread.currentThread().getName());
-            while (!Thread.currentThread().isInterrupted()) {
-                try {
-                    QueuedRoomRequest queuedRequest = requestQueue.take();
-                    processRequestInBackground(queuedRequest);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    log.warn("큐 프로세서 워커 중단됨: {}", Thread.currentThread().getName());
-                    break;
-                } catch (Exception e) {
-                    log.error("큐 프로세서 루프에서 복구 불가능한 오류 발생", e);
-                }
-            }
-        });
+        executorService.submit(this::runProcessorLoop);
     }
 
-    private void processRequestInBackground(QueuedRoomRequest queuedRequest) {
+    private void runProcessorLoop() {
+        log.info("큐 프로세서 워커 시작: {}", Thread.currentThread().getName());
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                QueuedRoomRequest queuedRequest = requestQueue.take();
+                processRequestInBackground(queuedRequest);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("큐 프로세서 워커 중단됨: {}", Thread.currentThread().getName());
+                break;
+            } catch (Exception e) {
+                log.error("큐 프로세서 루프에서 복구 불가능한 오류 발생", e);
+            }
+        }
+    }
+
+    private void processRequestInBackground(@NotNull QueuedRoomRequest queuedRequest) {
         String ruid = queuedRequest.ruid();
         RoomCreationRequest request = queuedRequest.request();
 
-        activeRequests.incrementAndGet();
-        log.info("백그라운드 처리 시작. ruid: {}. 현재 활성 요청: {}", ruid, activeRequests.get());
-        resultStore.updateJobStatus(ruid, JobResultStore.Status.PROCESSING);
+        markRequestAsActive(ruid);
 
         try {
-            // 변경된 RoomService 메소드 호출
-            JsonObject result = roomService.createRoom(request, ruid);
-            resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
-            int completedCount = completedRequests.incrementAndGet();
-            log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
+            processRoomCreationRequest(ruid, request);
         } catch (Exception e) {
-            log.error("백그라운드 처리 중 오류 발생. ruid: {}", ruid, e);
-            JsonObject errorResponse = createErrorResponse(ruid, request.getUuid(), e.getMessage());
-            resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
+            handleRequestProcessingFailure(ruid, request, e);
         } finally {
             activeRequests.decrementAndGet();
         }
+    }
+
+    private void markRequestAsActive(String ruid) {
+        activeRequests.incrementAndGet();
+        log.info("백그라운드 처리 시작. ruid: {}. 현재 활성 요청: {}", ruid, activeRequests.get());
+        resultStore.updateJobStatus(ruid, JobResultStore.Status.PROCESSING);
+    }
+
+    private void processRoomCreationRequest(String ruid, RoomCreationRequest request) {
+        JsonObject result = roomService.createRoom(request, ruid);
+        resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
+        int completedCount = completedRequests.incrementAndGet();
+        log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
+    }
+
+    private void handleRequestProcessingFailure(String ruid, @NotNull RoomCreationRequest request, Exception e) {
+        log.error("백그라운드 처리 중 오류 발생. ruid: {}", ruid, e);
+        JsonObject errorResponse = createErrorResponse(ruid, request.getUuid(), e.getMessage());
+        resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
     }
 
     @NotNull
@@ -136,14 +149,22 @@ public class RoomRequestQueueManager {
         executorService.shutdown();
         try {
             if (!executorService.awaitTermination(60, TimeUnit.SECONDS)) {
-                log.warn("ExecutorService가 정상적으로 종료되지 않아 강제 종료합니다.");
-                executorService.shutdownNow();
+                forceShutdown();
             }
         } catch (InterruptedException e) {
-            log.error("ExecutorService 종료 대기 중 인터럽트 발생");
-            executorService.shutdownNow();
-            Thread.currentThread().interrupt();
+            handleShutdownInterruption();
         }
         log.info("RoomRequestQueueManager 종료 완료.");
+    }
+
+    private void forceShutdown() {
+        log.warn("ExecutorService가 정상적으로 종료되지 않아 강제 종료합니다.");
+        executorService.shutdownNow();
+    }
+
+    private void handleShutdownInterruption() {
+        log.error("ExecutorService 종료 대기 중 인터럽트 발생");
+        executorService.shutdownNow();
+        Thread.currentThread().interrupt();
     }
 }

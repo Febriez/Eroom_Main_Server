@@ -85,12 +85,10 @@ public class UndertowServer {
         if (server != null) {
             log.info("서버 종료 시작...");
 
-            // 큐 매니저 종료
             if (queueManager != null) {
                 queueManager.shutdown();
             }
 
-            // RoomService 종료 (AutoCloseable 구현)
             if (roomService != null) {
                 try {
                     roomService.close();
@@ -99,7 +97,6 @@ public class UndertowServer {
                 }
             }
 
-            // 서버 종료
             server.stop();
             log.info("서버가 중지되었습니다");
         }

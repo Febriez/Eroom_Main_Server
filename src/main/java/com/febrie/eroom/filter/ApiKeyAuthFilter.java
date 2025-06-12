@@ -42,7 +42,7 @@ public class ApiKeyAuthFilter implements HttpHandler {
         next.handleRequest(exchange);
     }
 
-    private void sendUnauthorizedResponse(HttpServerExchange exchange, String message) {
+    private void sendUnauthorizedResponse(@NotNull HttpServerExchange exchange, String message) {
         exchange.setStatusCode(StatusCodes.UNAUTHORIZED);
         exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
         exchange.getResponseSender().send("{\"error\":\"" + message + "\"}");
