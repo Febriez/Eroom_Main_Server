@@ -4,6 +4,9 @@ import com.febrie.eroom.config.ApiKeyProvider;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import okhttp3.*;
+import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,10 +17,9 @@ import java.util.concurrent.TimeUnit;
 public class MeshyApiService implements MeshService {
     private static final Logger log = LoggerFactory.getLogger(MeshyApiService.class);
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
-    private static final String MESHY_API_URL = "https://api.meshy.ai/v2/text-to-3d";
-    private static final String MESHY_API_STATUS_URL = "https://api.meshy.ai/v2/resources/";
+    private static final String MESHY_API_BASE_URL = "https://api.meshy.ai/openapi/v2/text-to-3d";
     private static final int TIMEOUT_SECONDS = 30;
-    private static final int MAX_POLLING_ATTEMPTS = 200;
+    private static final int MAX_POLLING_ATTEMPTS = 100;
     private static final int POLLING_INTERVAL_MS = 3000;
 
     private final ApiKeyProvider apiKeyProvider;
@@ -40,6 +42,8 @@ public class MeshyApiService implements MeshService {
         }
     }
 
+    @NotNull
+    @Contract(" -> new")
     private OkHttpClient createHttpClient() {
         return new OkHttpClient.Builder()
                 .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -48,12 +52,13 @@ public class MeshyApiService implements MeshService {
                 .build();
     }
 
+    @NotNull
     private String processModelGeneration(String prompt, String objectName, String apiKey) {
         try {
             String previewId = createPreview(prompt, apiKey);
             if (previewId == null) {
                 log.error("{}의 프리뷰 생성 실패", objectName);
-                return "error-preview-" + UUID.randomUUID().toString();
+                return "error-preview-" + UUID.randomUUID();
             }
 
             log.info("{}의 프리뷰가 ID: {}로 생성됨", objectName, previewId);
@@ -64,9 +69,10 @@ public class MeshyApiService implements MeshService {
         }
     }
 
+    @NotNull
     private String processPreview(String previewId, String objectName, String apiKey) {
         try {
-            if (!waitForCompletion(previewId, apiKey)) {
+            if (isTaskFailed(previewId, apiKey)) {
                 log.error("{}의 프리뷰 생성 시간 초과", objectName);
                 return "timeout-preview-" + previewId;
             }
@@ -78,6 +84,7 @@ public class MeshyApiService implements MeshService {
         }
     }
 
+    @NotNull
     private String refineModelAfterPreview(String previewId, String objectName, String apiKey) {
         try {
             String refineId = refineModel(previewId, apiKey);
@@ -86,14 +93,38 @@ public class MeshyApiService implements MeshService {
                 return "error-refine-" + previewId;
             }
 
-            log.info("{}의 정제 작업이 ID: {}로 시작됨. 추적 ID를 반환합니다.", objectName, refineId);
-            return refineId;
+            log.info("{}의 정제 작업이 ID: {}로 시작됨. 완료 대기 중...", objectName, refineId);
+
+            // Refine 작업 완료 대기
+            if (isTaskFailed(refineId, apiKey)) {
+                log.error("{}의 정제 작업 완료 시간 초과", objectName);
+                return "timeout-refine-" + refineId;
+            }
+
+            // 완료된 작업의 상세 정보 조회
+            JsonObject taskDetails = getCompletedTaskDetails(refineId, apiKey);
+            if (taskDetails == null) {
+                log.error("{}의 완료된 작업 정보 조회 실패", objectName);
+                return "error-fetch-details-" + refineId;
+            }
+
+            // FBX URL 추출
+            String fbxUrl = extractFbxUrl(taskDetails);
+            if (fbxUrl == null) {
+                log.error("{}의 FBX URL 추출 실패", objectName);
+                return "error-no-fbx-" + refineId;
+            }
+
+            log.info("{}의 모델 생성 완료. FBX URL: {}", objectName, fbxUrl);
+            return fbxUrl;
+
         } catch (Exception e) {
             log.error("{}의 모델 정제 단계에서 오류 발생: {}", objectName, e.getMessage());
             return "error-refine-exception-" + previewId;
         }
     }
 
+    @Nullable
     private String createPreview(String prompt, String apiKey) {
         try {
             JsonObject requestBody = createPreviewRequestBody(prompt);
@@ -105,14 +136,20 @@ public class MeshyApiService implements MeshService {
         }
     }
 
+    @NotNull
     private JsonObject createPreviewRequestBody(String prompt) {
         JsonObject requestBody = new JsonObject();
-        requestBody.addProperty("prompt", prompt);
-        requestBody.addProperty("negative_prompt", "low quality, fast create");
         requestBody.addProperty("mode", "preview");
+        requestBody.addProperty("prompt", prompt);
+        requestBody.addProperty("art_style", "realistic");
+        requestBody.addProperty("ai_model", "meshy-4");
+        requestBody.addProperty("topology", "triangle");
+        requestBody.addProperty("target_polycount", 30000);
+        requestBody.addProperty("should_remesh", true);
         return requestBody;
     }
 
+    @Nullable
     private String refineModel(String previewId, String apiKey) {
         try {
             JsonObject requestBody = createRefineRequestBody(previewId);
@@ -124,14 +161,16 @@ public class MeshyApiService implements MeshService {
         }
     }
 
+    @NotNull
     private JsonObject createRefineRequestBody(String previewId) {
         JsonObject requestBody = new JsonObject();
-        requestBody.addProperty("resource_id", previewId);
-        requestBody.addProperty("format", "fbx");
         requestBody.addProperty("mode", "refine");
+        requestBody.addProperty("preview_task_id", previewId);
+        requestBody.addProperty("enable_pbr", true);
         return requestBody;
     }
 
+    @Nullable
     private JsonObject callMeshyApi(JsonObject requestBody, String apiKey) {
         try {
             log.info("Meshy API 호출: {}", requestBody);
@@ -143,28 +182,31 @@ public class MeshyApiService implements MeshService {
         }
     }
 
-    private Request buildApiRequest(JsonObject requestBody, String apiKey) {
+    @NotNull
+    private Request buildApiRequest(@NotNull JsonObject requestBody, String apiKey) {
         RequestBody body = RequestBody.create(requestBody.toString(), JSON);
         return new Request.Builder()
-                .url(MESHY_API_URL)
+                .url(MESHY_API_BASE_URL)
                 .addHeader("Content-Type", "application/json")
                 .addHeader("Authorization", "Bearer " + apiKey)
                 .post(body)
                 .build();
     }
 
-    private JsonObject getResourceStatus(String resourceId, String apiKey) {
+    @Nullable
+    private JsonObject getTaskStatus(String taskId, String apiKey) {
         try {
-            log.info("리소스 상태 확인: {}", resourceId);
-            String statusUrl = MESHY_API_STATUS_URL + resourceId;
+            log.info("작업 상태 확인: {}", taskId);
+            String statusUrl = MESHY_API_BASE_URL + "/" + taskId;
             Request request = buildStatusRequest(statusUrl, apiKey);
             return executeRequest(request);
         } catch (IOException e) {
-            log.error("리소스 상태 확인 중 오류 발생: {}", e.getMessage());
+            log.error("작업 상태 확인 중 오류 발생: {}", e.getMessage());
             return null;
         }
     }
 
+    @NotNull
     private Request buildStatusRequest(String url, String apiKey) {
         return new Request.Builder()
                 .url(url)
@@ -173,10 +215,15 @@ public class MeshyApiService implements MeshService {
                 .build();
     }
 
+    @Nullable
     private JsonObject executeRequest(Request request) throws IOException {
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                log.error("API 호출 실패. 상태 코드: {}", response.code());
+                log.error("API 호출 실패. 상태 코드: {}, 메시지: {}", response.code(), response.message());
+                if (response.body() != null) {
+                    String errorBody = response.body().string();
+                    log.error("에러 응답: {}", errorBody);
+                }
                 return null;
             }
 
@@ -187,46 +234,79 @@ public class MeshyApiService implements MeshService {
     }
 
     private String extractResourceId(JsonObject responseJson) {
-        if (responseJson != null && responseJson.has("resource_id")) {
-            return responseJson.get("resource_id").getAsString();
+        if (responseJson != null && responseJson.has("result")) {
+            return responseJson.get("result").getAsString();
         }
         return null;
     }
 
-    private boolean waitForCompletion(String resourceId, String apiKey) {
+    private boolean isTaskFailed(String taskId, String apiKey) {
         try {
             for (int i = 0; i < MAX_POLLING_ATTEMPTS; i++) {
-                JsonObject responseJson = getResourceStatus(resourceId, apiKey);
-                if (responseJson == null) {
-                    return false;
+                JsonObject taskStatus = getTaskStatus(taskId, apiKey);
+                if (taskStatus == null) {
+                    log.error("작업 상태 조회 실패");
+                    return true;
                 }
 
-                if (isResourceCompleted(responseJson)) {
-                    return true;
-                } else if (isResourceFailed(responseJson)) {
-                    log.error("리소스 생성 실패: {}", responseJson);
+                String status = taskStatus.get("status").getAsString();
+                int progress = taskStatus.get("progress").getAsInt();
+
+                log.info("작업 상태: {}, 진행률: {}%", status, progress);
+
+                if ("SUCCEEDED".equals(status)) {
                     return false;
+                } else if ("FAILED".equals(status) || "CANCELED".equals(status)) {
+                    if (taskStatus.has("task_error") && taskStatus.getAsJsonObject("task_error").has("message")) {
+                        String errorMessage = taskStatus.getAsJsonObject("task_error").get("message").getAsString();
+                        log.error("작업 실패: {}", errorMessage);
+                    }
+                    return true;
                 }
 
                 Thread.sleep(POLLING_INTERVAL_MS);
             }
 
-            log.error("리소스 생성 시간 초과");
-            return false;
+            log.error("작업 생성 시간 초과");
+            return true;
         } catch (Exception e) {
             log.error("상태 확인 중 오류 발생: {}", e.getMessage());
-            return false;
+            return true;
         }
     }
 
-    private boolean isResourceCompleted(JsonObject responseJson) {
-        String status = responseJson.get("status").getAsString();
-        int progress = responseJson.get("progress").getAsInt();
-        log.info("리소스 상태: {}, 진행률: {}%", status, progress);
-        return "completed".equals(status);
+    /**
+     * 완료된 작업의 모델 URL을 가져옵니다.
+     */
+    public JsonObject getCompletedTaskDetails(String taskId, String apiKey) {
+        try {
+            JsonObject taskStatus = getTaskStatus(taskId, apiKey);
+            if (taskStatus != null && "SUCCEEDED".equals(taskStatus.get("status").getAsString())) {
+                return taskStatus;
+            }
+            return null;
+        } catch (Exception e) {
+            log.error("작업 상세 정보 조회 중 오류 발생: {}", e.getMessage());
+            return null;
+        }
     }
 
-    private boolean isResourceFailed(JsonObject responseJson) {
-        return "failed".equals(responseJson.get("status").getAsString());
+    /**
+     * 작업 응답에서 FBX URL을 추출합니다.
+     */
+    @Nullable
+    private String extractFbxUrl(JsonObject taskDetails) {
+        try {
+            if (taskDetails.has("model_urls")) {
+                JsonObject modelUrls = taskDetails.getAsJsonObject("model_urls");
+                if (modelUrls.has("fbx")) {
+                    return modelUrls.get("fbx").getAsString();
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            log.error("FBX URL 추출 중 오류 발생: {}", e.getMessage());
+            return null;
+        }
     }
 }
