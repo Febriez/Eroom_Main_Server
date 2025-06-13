@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class RoomRequestQueueManager implements QueueManager {
     private static final Logger log = LoggerFactory.getLogger(RoomRequestQueueManager.class);
 
-    private record QueuedRoomRequest(String ruid, RoomCreationRequest request) {
+    private record QueuedRoomRequest(String ruid, RoomCreationRequest request, long queuedTimestamp) {
     }
 
     private final ExecutorService executorService;
@@ -45,14 +45,31 @@ public class RoomRequestQueueManager implements QueueManager {
     }
 
     @Override
-    public String submitRequest(RoomCreationRequest request) {
+    public String submitRequest(@NotNull RoomCreationRequest request) {
         String ruid = generateRuid();
+        long queuedTime = System.currentTimeMillis();
+
+        // 요청 데이터 상세 로깅
+        log.info("=== 요청 제출 상세 정보 ===");
+        log.info("RUID: {}", ruid);
+        log.info("User UUID: {}", request.getUuid());
+        log.info("Theme: '{}'", request.getTheme());
+        log.info("Keywords: {}", request.getKeywords() != null ? String.join(", ", request.getKeywords()) : "null");
+        log.info("Difficulty: '{}'", request.getDifficulty());
+        log.info("Room Prefab: '{}'", request.getRoomPrefab());
+        log.info("Queue Time: {}", queuedTime);
+        log.info("Current Queue Size BEFORE: {}", requestQueue.size());
+        log.info("========================");
 
         try {
             resultStore.registerJob(ruid);
-            requestQueue.put(new QueuedRoomRequest(ruid, request));
+            QueuedRoomRequest queuedRequest = new QueuedRoomRequest(ruid, request, queuedTime);
+            requestQueue.put(queuedRequest);
+
             log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
                     ruid, request.getUuid(), requestQueue.size());
+            log.info("큐 추가 후 상태 - Active: {}, Completed: {}", activeRequests.get(), completedRequests.get());
+
             return ruid;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -97,7 +114,13 @@ public class RoomRequestQueueManager implements QueueManager {
         log.info("큐 프로세서 워커 시작: {}", Thread.currentThread().getName());
         while (!Thread.currentThread().isInterrupted()) {
             try {
+                log.debug("큐에서 요청 대기 중... 현재 큐 크기: {}", requestQueue.size());
                 QueuedRoomRequest queuedRequest = requestQueue.take();
+
+                long waitTime = System.currentTimeMillis() - queuedRequest.queuedTimestamp();
+                log.info("큐에서 요청 추출됨. ruid: {}, 큐 대기 시간: {}ms",
+                        queuedRequest.ruid(), waitTime);
+
                 processRequestInBackground(queuedRequest);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -109,28 +132,61 @@ public class RoomRequestQueueManager implements QueueManager {
         }
     }
 
-    private void processRequestInBackground(QueuedRoomRequest queuedRequest) {
+    private void processRequestInBackground(@NotNull QueuedRoomRequest queuedRequest) {
         String ruid = queuedRequest.ruid();
         RoomCreationRequest request = queuedRequest.request();
+        long processingStartTime = System.currentTimeMillis();
 
-        activeRequests.incrementAndGet();
-        log.info("백그라운드 처리 시작. ruid: {}. 현재 활성 요청: {}", ruid, activeRequests.get());
+        int currentActive = activeRequests.incrementAndGet();
+        log.info("=== 백그라운드 처리 시작 ===");
+        log.info("RUID: {}", ruid);
+        log.info("User UUID: {}", request.getUuid());
+        log.info("현재 활성 요청: {}", currentActive);
+        log.info("처리 시작 시간: {}", processingStartTime);
+        log.info("===========================");
+
         resultStore.updateJobStatus(ruid, JobResultStore.Status.PROCESSING);
 
         try {
+            log.info("RoomService.createRoom() 호출 시작. ruid: {}", ruid);
             JsonObject result = roomService.createRoom(request, ruid);
+            long processingEndTime = System.currentTimeMillis();
+            long processingDuration = processingEndTime - processingStartTime;
+
+            log.info("=== RoomService.createRoom() 완료 ===");
+            log.info("RUID: {}", ruid);
+            log.info("처리 시간: {}ms", processingDuration);
+            log.info("결과 성공 여부: {}", result != null && result.has("success") ? result.get("success").getAsBoolean() : "unknown");
+            log.info("결과 객체 크기: {} 필드", result != null ? result.size() : 0);
+            if (result != null) {
+                log.info("결과 필드들: {}", result.keySet());
+            }
+            log.info("===============================");
+
             resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
             int completedCount = completedRequests.incrementAndGet();
             log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
+
         } catch (Exception e) {
-            log.error("백그라운드 처리 중 오류 발생. ruid: {}", ruid, e);
+            long processingEndTime = System.currentTimeMillis();
+            long processingDuration = processingEndTime - processingStartTime;
+
+            log.error("=== 백그라운드 처리 중 오류 발생 ===");
+            log.error("RUID: {}", ruid);
+            log.error("처리 시간: {}ms", processingDuration);
+            log.error("오류 메시지: {}", e.getMessage());
+            log.error("오류 타입: {}", e.getClass().getName());
+            log.error("==========================", e);
+
             JsonObject errorResponse = createErrorResponse(ruid, request.getUuid(), e.getMessage());
             resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
         } finally {
-            activeRequests.decrementAndGet();
+            int remainingActive = activeRequests.decrementAndGet();
+            log.info("백그라운드 처리 종료. ruid: {}, 남은 활성 요청: {}", ruid, remainingActive);
         }
     }
 
+    @NotNull
     private JsonObject createErrorResponse(String ruid, String userUuid, String errorMessage) {
         JsonObject errorResponse = new JsonObject();
         errorResponse.addProperty("ruid", ruid);

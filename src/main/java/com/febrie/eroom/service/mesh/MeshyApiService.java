@@ -65,7 +65,7 @@ public class MeshyApiService implements MeshService {
             return processPreview(previewId, objectName, apiKey);
         } catch (Exception e) {
             log.error("{}의 프리뷰 생성 단계에서 오류 발생: {}", objectName, e.getMessage());
-            return "error-preview-exception-" + UUID.randomUUID().toString();
+            return "error-preview-exception-" + UUID.randomUUID();
         }
     }
 
@@ -144,7 +144,7 @@ public class MeshyApiService implements MeshService {
         requestBody.addProperty("art_style", "realistic");
         requestBody.addProperty("ai_model", "meshy-4");
         requestBody.addProperty("topology", "triangle");
-        requestBody.addProperty("target_polycount", 30000);
+        requestBody.addProperty("target_polycount", 6000);
         requestBody.addProperty("should_remesh", true);
         return requestBody;
     }
