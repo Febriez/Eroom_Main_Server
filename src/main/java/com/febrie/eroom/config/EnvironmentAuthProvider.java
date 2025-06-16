@@ -13,7 +13,6 @@ public class EnvironmentAuthProvider implements AuthProvider {
     private final String apiKey;
 
     public EnvironmentAuthProvider() {
-        System.out.println(System.getenv("EROOM_PRIVATE_KEY"));
         this.apiKey = initializeApiKey();
     }
 
