@@ -144,8 +144,8 @@ public class MeshyApiService implements MeshService {
         requestBody.addProperty("art_style", "realistic");
         requestBody.addProperty("ai_model", "meshy-4");
         requestBody.addProperty("topology", "triangle");
-        requestBody.addProperty("target_polycount", 6000);
-        requestBody.addProperty("should_remesh", true);
+        requestBody.addProperty("target_polycount", 15000);
+        requestBody.addProperty("should_remesh", false);
         return requestBody;
     }
 
@@ -166,7 +166,7 @@ public class MeshyApiService implements MeshService {
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("mode", "refine");
         requestBody.addProperty("preview_task_id", previewId);
-        requestBody.addProperty("enable_pbr", true);
+        requestBody.addProperty("enable_pbr", false);
         return requestBody;
     }
 
