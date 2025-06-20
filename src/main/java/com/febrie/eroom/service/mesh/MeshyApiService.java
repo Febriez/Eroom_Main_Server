@@ -19,8 +19,8 @@ public class MeshyApiService implements MeshService {
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     private static final String MESHY_API_BASE_URL = "https://api.meshy.ai/openapi/v2/text-to-3d";
     private static final int TIMEOUT_SECONDS = 30;
-    private static final int MAX_POLLING_ATTEMPTS = 100;
-    private static final int POLLING_INTERVAL_MS = 5000;
+    private static final int MAX_POLLING_ATTEMPTS = 30;
+    private static final int POLLING_INTERVAL_MS = 10000;
 
     private final ApiKeyProvider apiKeyProvider;
     private final OkHttpClient httpClient;
@@ -144,7 +144,7 @@ public class MeshyApiService implements MeshService {
         requestBody.addProperty("art_style", "realistic");
         requestBody.addProperty("ai_model", "meshy-4");
         requestBody.addProperty("topology", "triangle");
-        requestBody.addProperty("target_polycount", 15000);
+        requestBody.addProperty("target_polycount", 4096);
         requestBody.addProperty("should_remesh", false);
         return requestBody;
     }
