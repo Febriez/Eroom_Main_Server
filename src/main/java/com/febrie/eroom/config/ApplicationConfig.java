@@ -2,6 +2,7 @@ package com.febrie.eroom.config;
 
 import com.febrie.eroom.server.Server;
 import com.febrie.eroom.server.UndertowServer;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,7 +16,7 @@ public class ApplicationConfig {
         this.port = parsePort(args);
     }
 
-    private int parsePort(String[] args) {
+    private int parsePort(@NotNull String[] args) {
         if (args.length > 0) {
             try {
                 return Integer.parseInt(args[0]);
