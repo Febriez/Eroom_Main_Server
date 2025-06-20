@@ -20,7 +20,7 @@ public class MeshyApiService implements MeshService {
     private static final String MESHY_API_BASE_URL = "https://api.meshy.ai/openapi/v2/text-to-3d";
     private static final int TIMEOUT_SECONDS = 30;
     private static final int MAX_POLLING_ATTEMPTS = 100;
-    private static final int POLLING_INTERVAL_MS = 3000;
+    private static final int POLLING_INTERVAL_MS = 5000;
 
     private final ApiKeyProvider apiKeyProvider;
     private final OkHttpClient httpClient;
