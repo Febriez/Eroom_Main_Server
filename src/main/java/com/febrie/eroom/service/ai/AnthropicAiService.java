@@ -26,25 +26,19 @@ import java.util.regex.Pattern;
 public class AnthropicAiService implements AiService {
     private static final Logger log = LoggerFactory.getLogger(AnthropicAiService.class);
 
-    // 개선된 정규식: 코드 블록의 언어 식별자를 더 정확하게 캡처
-    private static final Pattern MARKDOWN_SCRIPT_PATTERN = Pattern.compile(
-            "```(?:csharp|cs|c#)?\\s*\\n([\\s\\S]*?)```",
-            Pattern.MULTILINE | Pattern.CASE_INSENSITIVE
-    );
-
-    // 스크립트 이름을 찾기 위한 추가 패턴
-    private static final Pattern SCRIPT_NAME_PATTERN = Pattern.compile(
-            "```(\\w+(?:\\.cs)?)\\s*\\n([\\s\\S]*?)```",
+    // 개선된 정규식: 모든 코드 블록을 찾기 위한 패턴
+    private static final Pattern ALL_CODE_BLOCKS_PATTERN = Pattern.compile(
+            "```(?:[\\w#]+)?\\s*\\n([\\s\\S]*?)```",
             Pattern.MULTILINE
     );
-
-    private static final String GAME_MANAGER_NAME = "GameManager";
 
     // C# 클래스 이름 추출을 위한 패턴
     private static final Pattern CLASS_NAME_PATTERN = Pattern.compile(
             "public\\s+(?:partial\\s+)?class\\s+(\\w+)\\s*[:{]",
             Pattern.MULTILINE
     );
+
+    private static final String GAME_MANAGER_NAME = "GameManager";
 
     private final ApiKeyProvider apiKeyProvider;
     private final ConfigurationManager configManager;
@@ -183,7 +177,7 @@ public class AnthropicAiService implements AiService {
             terminateWithError("파싱된 스크립트가 없습니다.");
         }
 
-        validateGameManagerExists(encodedScripts);
+        // GameManager가 배치 처리에서는 필수가 아님 (첫 번째 배치에만 포함)
         log.info("마크다운 스크립트 Base64 인코딩 완료: {} 개의 스크립트", encodedScripts.size());
         return encodedScripts;
     }
@@ -192,44 +186,48 @@ public class AnthropicAiService implements AiService {
     private Map<String, String> extractScriptsFromMarkdown(String content) {
         Map<String, String> encodedScripts = new HashMap<>();
 
-        // 먼저 스크립트 이름이 명시된 코드 블록을 찾음
-        Matcher namedMatcher = SCRIPT_NAME_PATTERN.matcher(content);
-        while (namedMatcher.find()) {
-            String scriptName = normalizeScriptName(namedMatcher.group(1).trim());
-            String scriptCode = namedMatcher.group(2).trim();
+        // 모든 코드 블록 찾기
+        Matcher matcher = ALL_CODE_BLOCKS_PATTERN.matcher(content);
+        int codeBlockCount = 0;
 
-            if (shouldSkipScript(scriptName)) {
-                // C# 언어 표시자인 경우, 코드에서 클래스 이름을 추출 시도
-                scriptName = extractClassNameFromCode(scriptCode);
-                if (scriptName == null) {
-                    log.warn("클래스 이름을 추출할 수 없는 C# 코드 블록을 건너뜁니다.");
-                    continue;
-                }
+        while (matcher.find()) {
+            String scriptCode = matcher.group(1).trim();
+            codeBlockCount++;
+
+            if (scriptCode.isEmpty()) {
+                log.debug("빈 코드 블록 #{} 건너뜀", codeBlockCount);
+                continue;
+            }
+
+            // 클래스 이름 추출
+            String scriptName = extractClassNameFromCode(scriptCode);
+
+            if (scriptName == null) {
+                log.warn("코드 블록 #{}에서 클래스 이름을 추출할 수 없습니다. 코드 길이: {}자",
+                        codeBlockCount, scriptCode.length());
+                continue;
+            }
+
+            // 클래스 이름에서 'C' 접미사 제거 (예: ExitDoorC -> ExitDoor)
+            if (scriptName.endsWith("C") && !scriptName.equals("C")) {
+                scriptName = scriptName.substring(0, scriptName.length() - 1);
             }
 
             String uniqueName = ensureUniqueName(scriptName, encodedScripts);
             encodeAndStore(uniqueName, scriptCode, encodedScripts);
+
+            log.debug("코드 블록 #{}: 스크립트 '{}' 추출 성공 ({}자)",
+                    codeBlockCount, uniqueName, scriptCode.length());
         }
 
-        // 이름이 없는 C# 코드 블록도 처리
-        if (encodedScripts.isEmpty()) {
-            log.debug("이름이 명시된 코드 블록을 찾지 못했습니다. 일반 C# 코드 블록을 검색합니다.");
-            Matcher genericMatcher = MARKDOWN_SCRIPT_PATTERN.matcher(content);
+        log.info("전체 {} 개의 코드 블록 중 {} 개의 스크립트를 성공적으로 추출했습니다.",
+                codeBlockCount, encodedScripts.size());
 
-            while (genericMatcher.find()) {
-                String scriptCode = genericMatcher.group(1).trim();
-                String scriptName = extractClassNameFromCode(scriptCode);
-
-                if (scriptName != null) {
-                    String uniqueName = ensureUniqueName(scriptName, encodedScripts);
-                    encodeAndStore(uniqueName, scriptCode, encodedScripts);
-                } else {
-                    log.warn("클래스 이름을 추출할 수 없는 코드 블록을 발견했습니다.");
-                }
-            }
+        // 디버깅을 위해 추출된 스크립트 이름들 출력
+        if (!encodedScripts.isEmpty()) {
+            log.debug("추출된 스크립트 목록: {}", String.join(", ", encodedScripts.keySet()));
         }
 
-        log.debug("총 {} 개의 스크립트를 추출했습니다.", encodedScripts.size());
         return encodedScripts;
     }
 
@@ -240,22 +238,6 @@ public class AnthropicAiService implements AiService {
             return matcher.group(1);
         }
         return null;
-    }
-
-    @NotNull
-    private String normalizeScriptName(@NotNull String scriptName) {
-        // .cs 확장자 제거
-        if (scriptName.endsWith(".cs")) {
-            return scriptName.substring(0, scriptName.length() - 3);
-        }
-        return scriptName;
-    }
-
-    private boolean shouldSkipScript(@NotNull String scriptName) {
-        // C# 언어 표시자들
-        return scriptName.equalsIgnoreCase("csharp") ||
-                scriptName.equalsIgnoreCase("cs") ||
-                scriptName.equalsIgnoreCase("c#");
     }
 
     private String ensureUniqueName(String scriptName, @NotNull Map<String, String> existingScripts) {

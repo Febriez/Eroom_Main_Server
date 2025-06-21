@@ -17,15 +17,30 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public class RoomServiceImpl implements RoomService, AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(RoomServiceImpl.class);
+
+    // 타임아웃 및 병렬 처리 상수
     private static final int MODEL_TIMEOUT_MINUTES = 10;
     private static final int EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 60;
+    private static final int PARALLEL_THRESHOLD = 10;
+    private static final int BATCH_SIZE = 5;  // 8에서 5로 줄임
+    private static final int FIRST_BATCH_SIZE = 5;  // 7에서 5로 줄임
+    private static final int THREAD_POOL_SIZE = 10;
+
+    // 오브젝트 타입 상수
+    private static final String TYPE_GAME_MANAGER = "game_manager";
+    private static final String TYPE_EXISTING_INTERACTIVE = "existing_interactive_object";
+    private static final String TYPE_INTERACTIVE = "interactive_object";
+
+    // 난이도별 예상 오브젝트 수
+    private static final Map<String, Integer> EXPECTED_OBJECTS_BY_DIFFICULTY = Map.of(
+            "hard", 35,
+            "normal", 22,
+            "easy", 12
+    );
 
     private final AiService aiService;
     private final MeshService meshService;
@@ -38,7 +53,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         this.aiService = aiService;
         this.meshService = meshService;
         this.configManager = configManager;
-        this.executorService = Executors.newFixedThreadPool(10);
+        this.executorService = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
         this.requestValidator = new RoomRequestValidator();
         this.scenarioValidator = new DefaultScenarioValidator();
     }
@@ -102,16 +117,46 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     @NotNull
     private JsonObject buildScenarioRequest(@NotNull RoomCreationRequest request, String ruid) {
         JsonObject scenarioRequest = new JsonObject();
-        JsonArray initialKeywords = createKeywordsArray(request.getKeywords());
 
+        // 기본 정보 설정
         scenarioRequest.addProperty("uuid", request.getUuid());
         scenarioRequest.addProperty("ruid", ruid);
         scenarioRequest.addProperty("theme", request.getTheme().trim());
-        scenarioRequest.add("keywords", initialKeywords);
         scenarioRequest.addProperty("difficulty", request.getValidatedDifficulty());
         scenarioRequest.addProperty("room_prefab_url", request.getRoomPrefab().trim());
 
+        // Keywords 배열 추가
+        scenarioRequest.add("keywords", createKeywordsArray(request.getKeywords()));
+
+        // Existing objects 배열 추가
+        JsonArray existingObjectsArray = convertExistingObjectsToJsonArray(request.getExistingObjectsSafe());
+        scenarioRequest.add("existing_objects", existingObjectsArray);
+
+        // 추가 메타데이터
+        scenarioRequest.addProperty("existing_objects_count", existingObjectsArray.size());
+        int expectedTotal = getExpectedObjectCount(request.getValidatedDifficulty());
+        scenarioRequest.addProperty("expected_total_objects", expectedTotal);
+
+        log.info("시나리오 요청 생성 완료 - keywords: {}, existing_objects: {}, expected_total: {}",
+                request.getKeywords().length, existingObjectsArray.size(), expectedTotal);
+
         return scenarioRequest;
+    }
+
+    @NotNull
+    private JsonArray convertExistingObjectsToJsonArray(@NotNull List<RoomCreationRequest.ExistingObject> existingObjects) {
+        JsonArray array = new JsonArray();
+        for (RoomCreationRequest.ExistingObject obj : existingObjects) {
+            JsonObject jsonObj = new JsonObject();
+            jsonObj.addProperty("name", obj.getName());
+            jsonObj.addProperty("id", obj.getId());
+            array.add(jsonObj);
+        }
+        return array;
+    }
+
+    private int getExpectedObjectCount(String difficulty) {
+        return EXPECTED_OBJECTS_BY_DIFFICULTY.getOrDefault(difficulty, EXPECTED_OBJECTS_BY_DIFFICULTY.get("normal"));
     }
 
     @NotNull
@@ -129,41 +174,54 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         for (int i = 0; i < objectInstructions.size(); i++) {
             JsonObject instruction = objectInstructions.get(i).getAsJsonObject();
 
-            if (isGameManager(instruction)) {
-                log.debug("GameManager는 모델 생성에서 건너뜁니다.");
-                continue;
-            }
-
-            if (!hasRequiredFields(instruction)) {
-                log.warn("object_instructions[{}]에 필수 필드가 없습니다. 건너뜁니다.", i);
+            if (shouldSkipModelGeneration(instruction)) {
                 continue;
             }
 
             String objectName = instruction.get("name").getAsString();
             String visualDescription = instruction.get("visual_description").getAsString();
 
-            if (isInvalidNameOrDescription(objectName, visualDescription)) {
-                log.warn("object_instructions[{}]에 유효하지 않은 데이터가 있습니다. 건너뜁니다.", i);
-                continue;
+            if (isValidForModelGeneration(objectName, visualDescription)) {
+                futures.add(createModelTask(visualDescription, objectName, i));
             }
-
-            futures.add(createModelTask(visualDescription, objectName, i));
         }
 
-        log.info("모델 생성 태스크 총 {}개 추가 완료.", futures.size());
+        log.info("모델 생성 태스크 총 {}개 추가 완료 (키워드 기반 새 오브젝트만)", futures.size());
         return futures;
     }
 
-    private boolean isGameManager(@NotNull JsonObject instruction) {
-        return instruction.has("type") && "game_manager".equals(instruction.get("type").getAsString());
+    private boolean shouldSkipModelGeneration(@NotNull JsonObject instruction) {
+        String type = instruction.has("type") ? instruction.get("type").getAsString() : "";
+
+        if (TYPE_GAME_MANAGER.equals(type)) {
+            log.debug("GameManager는 모델 생성에서 건너뜁니다.");
+            return true;
+        }
+
+        if (TYPE_EXISTING_INTERACTIVE.equals(type)) {
+            log.debug("기존 오브젝트 '{}'는 모델 생성에서 건너뜁니다.",
+                    instruction.get("name").getAsString());
+            return true;
+        }
+
+        if (!instruction.has("name") || !instruction.has("visual_description")) {
+            log.warn("필수 필드(name, visual_description)가 없어 건너뜁니다.");
+            return true;
+        }
+
+        return false;
     }
 
-    private boolean hasRequiredFields(@NotNull JsonObject instruction) {
-        return instruction.has("name") && instruction.has("visual_description");
-    }
-
-    private boolean isInvalidNameOrDescription(String name, String description) {
-        return name == null || name.trim().isEmpty() || description == null || description.trim().isEmpty();
+    private boolean isValidForModelGeneration(String name, String description) {
+        if (name == null || name.trim().isEmpty()) {
+            log.warn("오브젝트 이름이 비어있습니다.");
+            return false;
+        }
+        if (description == null || description.trim().isEmpty()) {
+            log.warn("오브젝트 설명이 비어있습니다: {}", name);
+            return false;
+        }
+        return true;
     }
 
     @NotNull
@@ -174,7 +232,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
                 log.debug("3D 모델 생성 요청 [{}]: name='{}', prompt='{}자'", index, name, prompt.length());
                 String trackingId = meshService.generateModel(prompt, name, index);
 
-                String resultId = trackingId != null && !trackingId.trim().isEmpty()
+                String resultId = (trackingId != null && !trackingId.trim().isEmpty())
                         ? trackingId
                         : "pending-" + UUID.randomUUID().toString().substring(0, 8);
 
@@ -189,19 +247,255 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     @NotNull
     private Map<String, String> createUnifiedScripts(JsonObject scenario, String roomPrefabUrl) {
         try {
-            String prompt = configManager.getPrompt("unified_scripts");
-            JsonObject scriptRequest = buildScriptRequest(scenario, roomPrefabUrl);
+            JsonArray objectInstructions = scenario.getAsJsonArray("object_instructions");
+            int totalObjects = objectInstructions != null ? objectInstructions.size() : 0;
 
-            Map<String, String> allScripts = aiService.generateUnifiedScripts(prompt, scriptRequest);
-            if (allScripts == null || allScripts.isEmpty()) {
-                throw new RuntimeException("통합 스크립트 생성 실패");
+            log.info("=== 스크립트 생성 시작 ===");
+            log.info("총 오브젝트 수: {}", totalObjects);
+            log.info("병렬 처리 임계값: {}", PARALLEL_THRESHOLD);
+            log.info("모드: {}", totalObjects < PARALLEL_THRESHOLD ? "단일 요청" : "병렬 처리");
+
+            if (totalObjects < PARALLEL_THRESHOLD) {
+                log.info("단일 요청 모드 사용 (오브젝트 {}개)", totalObjects);
+                return createUnifiedScriptsSingleRequest(scenario, roomPrefabUrl);
+            } else {
+                log.info("병렬 처리 모드 사용 (오브젝트 {}개)", totalObjects);
+                return createUnifiedScriptsParallel(scenario, roomPrefabUrl);
             }
 
-            log.info("통합 스크립트 생성 완료: {} 개", allScripts.size());
-            return allScripts;
+        } catch (Exception e) {
+            throw new RuntimeException("스크립트 생성 실패: " + e.getMessage(), e);
+        }
+    }
+
+    private Map<String, String> createUnifiedScriptsSingleRequest(JsonObject scenario, String roomPrefabUrl) {
+        String prompt = configManager.getPrompt("unified_scripts");
+        JsonObject scriptRequest = buildScriptRequest(scenario, roomPrefabUrl);
+        return aiService.generateUnifiedScripts(prompt, scriptRequest);
+    }
+
+    private Map<String, String> createUnifiedScriptsParallel(JsonObject scenario, String roomPrefabUrl) {
+        Map<String, String> allScripts = new ConcurrentHashMap<>();
+
+        // GameManager와 다른 오브젝트 분리
+        List<JsonObject> gameManagerList = new ArrayList<>();
+        List<JsonObject> otherObjects = new ArrayList<>();
+
+        separateGameManagerAndObjects(scenario.getAsJsonArray("object_instructions"),
+                gameManagerList, otherObjects);
+
+        log.info("병렬 처리 시작: GameManager {} 개 + 기타 오브젝트 {} 개",
+                gameManagerList.size(), otherObjects.size());
+
+        // 첫 번째 배치 처리 (GameManager 포함)
+        String gameManagerScript = processFirstBatch(scenario, roomPrefabUrl,
+                gameManagerList, otherObjects, allScripts);
+
+        // 나머지 배치 병렬 처리
+        processRemainingBatches(scenario, roomPrefabUrl, otherObjects,
+                gameManagerScript, allScripts);
+
+        log.info("병렬 스크립트 생성 완료: 총 {} 개", allScripts.size());
+        return allScripts;
+    }
+
+    private void separateGameManagerAndObjects(JsonArray objectInstructions,
+                                               List<JsonObject> gameManagerList,
+                                               List<JsonObject> otherObjects) {
+        for (int i = 0; i < objectInstructions.size(); i++) {
+            JsonObject obj = objectInstructions.get(i).getAsJsonObject();
+            if (TYPE_GAME_MANAGER.equals(obj.get("type").getAsString())) {
+                gameManagerList.add(obj);
+            } else {
+                otherObjects.add(obj);
+            }
+        }
+    }
+
+    @NotNull
+    private String processFirstBatch(JsonObject scenario, String roomPrefabUrl,
+                                     List<JsonObject> gameManagerList,
+                                     List<JsonObject> otherObjects,
+                                     Map<String, String> allScripts) {
+        // 첫 배치 구성
+        int firstBatchSize = Math.min(FIRST_BATCH_SIZE, otherObjects.size());
+        List<JsonObject> firstBatch = new ArrayList<>(gameManagerList);
+        firstBatch.addAll(otherObjects.subList(0, firstBatchSize));
+
+        log.info("첫 번째 배치: GameManager {} 개 + 오브젝트 {} 개 = 총 {} 개",
+                gameManagerList.size(), firstBatchSize, firstBatch.size());
+
+        // 첫 배치 동기 실행
+        JsonObject firstBatchRequest = buildBatchRequest(scenario, roomPrefabUrl,
+                firstBatch, true, null);
+
+        Map<String, String> firstBatchResult = aiService.generateUnifiedScripts(
+                configManager.getPrompt("unified_scripts"), firstBatchRequest);
+
+        allScripts.putAll(firstBatchResult);
+
+        // GameManager 스크립트 추출 및 검증
+        String gameManagerScript = firstBatchResult.get("GameManager");
+        if (gameManagerScript == null || gameManagerScript.isEmpty()) {
+            throw new RuntimeException("GameManager 스크립트 생성 실패");
+        }
+
+        log.info("GameManager 생성 완료, 첫 배치에서 {} 개 스크립트 생성", firstBatchResult.size());
+        return gameManagerScript;
+    }
+
+    private void processRemainingBatches(JsonObject scenario, String roomPrefabUrl,
+                                         List<JsonObject> allObjects,
+                                         String gameManagerScript,
+                                         Map<String, String> allScripts) {
+        List<JsonObject> remainingObjects = allObjects.subList(
+                Math.min(FIRST_BATCH_SIZE, allObjects.size()), allObjects.size());
+
+        if (remainingObjects.isEmpty()) {
+            return;
+        }
+
+        List<CompletableFuture<Map<String, String>>> futures = new ArrayList<>();
+
+        // 배치별로 나누어 처리
+        for (int i = 0; i < remainingObjects.size(); i += BATCH_SIZE) {
+            int batchEnd = Math.min(i + BATCH_SIZE, remainingObjects.size());
+            List<JsonObject> batch = remainingObjects.subList(i, batchEnd);
+
+            int absoluteBatchStart = FIRST_BATCH_SIZE + i;
+            log.info("배치 생성: 오브젝트 {}-{} ({}개)",
+                    absoluteBatchStart + 1, FIRST_BATCH_SIZE + batchEnd, batch.size());
+
+            CompletableFuture<Map<String, String>> future = CompletableFuture.supplyAsync(() ->
+                            generateBatchScripts(batch, scenario, roomPrefabUrl,
+                                    absoluteBatchStart, gameManagerScript),
+                    executorService
+            );
+
+            futures.add(future);
+        }
+
+        // 모든 배치 완료 대기
+        waitForAllBatches(futures, allScripts);
+    }
+
+    private void waitForAllBatches(List<CompletableFuture<Map<String, String>>> futures,
+                                   Map<String, String> allScripts) {
+        try {
+            CompletableFuture<Void> allFutures = CompletableFuture.allOf(
+                    futures.toArray(new CompletableFuture[0])
+            );
+
+            allFutures.get(5, TimeUnit.MINUTES);
+
+            // 결과 수집
+            for (CompletableFuture<Map<String, String>> future : futures) {
+                allScripts.putAll(future.get());
+            }
+
+        } catch (TimeoutException e) {
+            log.error("스크립트 생성 타임아웃");
+            throw new RuntimeException("스크립트 생성 시간 초과");
+        } catch (Exception e) {
+            log.error("병렬 처리 중 오류", e);
+            throw new RuntimeException("병렬 스크립트 생성 실패: " + e.getMessage());
+        }
+    }
+
+    @NotNull
+    private JsonObject buildBatchRequest(JsonObject scenario, String roomPrefabUrl,
+                                         List<JsonObject> batch, boolean isFirstBatch,
+                                         String gameManagerScript) {
+        JsonObject request = new JsonObject();
+        request.add("scenario_data", scenario.getAsJsonObject("scenario_data"));
+
+        JsonArray batchArray = new JsonArray();
+        batch.forEach(batchArray::add);
+        request.add("object_instructions", batchArray);
+
+        request.addProperty("room_prefab_url", roomPrefabUrl);
+
+        // 배치에 포함된 오브젝트 이름 로깅
+        List<String> objectNames = new ArrayList<>();
+        for (JsonObject obj : batch) {
+            objectNames.add(obj.get("name").getAsString());
+        }
+        log.debug("배치 오브젝트 목록: {}", String.join(", ", objectNames));
+
+        if (isFirstBatch) {
+            request.addProperty("is_first_batch", true);
+            request.addProperty("total_objects", scenario.getAsJsonArray("object_instructions").size());
+        } else {
+            request.addProperty("game_manager_script", gameManagerScript);
+            request.addProperty("total_objects", scenario.getAsJsonArray("object_instructions").size());
+        }
+
+        // model_scales 처리
+        addModelScalesToRequest(scenario, batch, request);
+
+        return request;
+    }
+
+    private void addModelScalesToRequest(JsonObject scenario, List<JsonObject> batch, JsonObject request) {
+        if (!scenario.has("model_scales")) {
+            return;
+        }
+
+        JsonObject allScales = scenario.getAsJsonObject("model_scales");
+        JsonObject batchScales = new JsonObject();
+
+        batch.forEach(obj -> {
+            String name = obj.get("name").getAsString();
+            if (allScales.has(name)) {
+                batchScales.add(name, allScales.get(name));
+            }
+        });
+
+        if (!batchScales.isEmpty()) {
+            request.add("model_scales", batchScales);
+        }
+    }
+
+    private Map<String, String> generateBatchScripts(List<JsonObject> batch,
+                                                     JsonObject scenario,
+                                                     String roomPrefabUrl,
+                                                     int batchStartIndex,
+                                                     String gameManagerScript) {
+        try {
+            String prompt = configManager.getPrompt("scripts_batch");
+            JsonObject request = buildBatchRequest(scenario, roomPrefabUrl,
+                    batch, false, gameManagerScript);
+
+            request.addProperty("batch_index", batchStartIndex);
+
+            log.info("배치 {} API 호출 중... (오브젝트 {}개)",
+                    batchStartIndex / BATCH_SIZE + 1, batch.size());
+
+            Map<String, String> result = aiService.generateUnifiedScripts(prompt, request);
+
+            log.info("배치 {} 완료: {} 개 스크립트 생성됨 (예상: {} 개)",
+                    batchStartIndex / BATCH_SIZE + 1, result.size(), batch.size());
+
+            // 스크립트 수 검증
+            if (result.size() < batch.size()) {
+                log.warn("배치 {}: 생성된 스크립트 수({})가 오브젝트 수({})보다 적습니다. 누락된 오브젝트를 확인하세요.",
+                        batchStartIndex / BATCH_SIZE + 1, result.size(), batch.size());
+
+                // 누락된 오브젝트 이름 출력
+                Set<String> generatedNames = result.keySet();
+                for (JsonObject obj : batch) {
+                    String objName = obj.get("name").getAsString();
+                    if (!generatedNames.contains(objName) && !generatedNames.contains(objName + "C")) {
+                        log.warn("누락된 오브젝트 스크립트: {}", objName);
+                    }
+                }
+            }
+
+            return result;
 
         } catch (Exception e) {
-            throw new RuntimeException("통합 스크립트 생성 실패: " + e.getMessage(), e);
+            log.error("배치 {} 생성 실패", batchStartIndex / BATCH_SIZE + 1, e);
+            return new HashMap<>();
         }
     }
 
@@ -211,27 +505,32 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         scriptRequest.add("scenario_data", scenario.getAsJsonObject("scenario_data"));
         scriptRequest.add("object_instructions", scenario.getAsJsonArray("object_instructions"));
         scriptRequest.addProperty("room_prefab_url", roomPrefabUrl);
+
+        if (scenario.has("model_scales")) {
+            scriptRequest.add("model_scales", scenario.getAsJsonObject("model_scales"));
+        }
+
         return scriptRequest;
     }
 
     @NotNull
     private JsonObject waitForModels(@NotNull List<CompletableFuture<ModelGenerationResult>> futures) {
-        JsonObject tracking = new JsonObject();
-        JsonObject failedModels = new JsonObject();
-
         if (futures.isEmpty()) {
             return createEmptyTracking();
         }
 
+        JsonObject tracking = new JsonObject();
+        JsonObject failedModels = new JsonObject();
+
         log.info("3D 모델 생성 완료 대기 중: {} 개 (최대 {}분)", futures.size(), MODEL_TIMEOUT_MINUTES);
 
         try {
-            CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+            CompletableFuture<Void> allFutures = CompletableFuture.allOf(
+                    futures.toArray(new CompletableFuture[0])
+            );
             allFutures.get(MODEL_TIMEOUT_MINUTES, TimeUnit.MINUTES);
-
             collectResults(futures, tracking, failedModels);
-
-        } catch (java.util.concurrent.TimeoutException e) {
+        } catch (TimeoutException e) {
             handleTimeout(futures, tracking, failedModels);
         } catch (Exception e) {
             log.error("모델 생성 대기 중 오류 발생", e);
@@ -276,23 +575,16 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     private void addTrackingResult(JsonObject tracking, JsonObject failedModels, ModelGenerationResult result) {
-        if (result == null) {
-            log.warn("모델 결과가 null입니다");
+        if (result == null || result.getObjectName() == null || result.getObjectName().trim().isEmpty()) {
+            log.warn("유효하지 않은 모델 결과: {}", result);
             return;
         }
 
+        String objectName = result.getObjectName().trim();
         String trackingId = result.getTrackingId();
-        String objectName = result.getObjectName();
-
-        if (objectName == null || objectName.trim().isEmpty()) {
-            log.warn("오브젝트 이름이 없습니다: {}", result);
-            return;
-        }
-
-        objectName = objectName.trim();
 
         if (trackingId != null && !trackingId.trim().isEmpty()) {
-            if (trackingId.startsWith("error-")) {
+            if (trackingId.startsWith("error-") || trackingId.startsWith("timeout-")) {
                 failedModels.addProperty(objectName, trackingId);
                 log.warn("모델 생성 실패로 표시됨: {} -> {}", objectName, trackingId);
             } else {
@@ -315,8 +607,9 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private JsonObject buildFinalResponse(@NotNull RoomCreationRequest request, String ruid, JsonObject scenario,
-                                          Map<String, String> allScripts, JsonObject tracking) {
+    private JsonObject buildFinalResponse(@NotNull RoomCreationRequest request, String ruid,
+                                          JsonObject scenario, Map<String, String> allScripts,
+                                          JsonObject tracking) {
         JsonObject response = new JsonObject();
         response.addProperty("uuid", request.getUuid());
         response.addProperty("ruid", ruid);
@@ -330,6 +623,17 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         response.addProperty("success", true);
         response.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
 
+        // 최종 결과 통계 로깅
+        int expectedObjects = scenario.getAsJsonArray("object_instructions").size();
+        int generatedScripts = allScripts.size();
+        log.info("=== 방 생성 완료 통계 ===");
+        log.info("RUID: {}", ruid);
+        log.info("예상 오브젝트 수: {}", expectedObjects);
+        log.info("생성된 스크립트 수: {}", generatedScripts);
+        log.info("스크립트 생성률: {}%", (generatedScripts * 100) / expectedObjects);
+        log.info("생성된 스크립트 목록: {}", String.join(", ", allScripts.keySet()));
+        log.info("========================");
+
         return response;
     }
 
@@ -337,10 +641,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     private JsonObject buildScriptsObject(@NotNull Map<String, String> allScripts) {
         JsonObject scripts = new JsonObject();
 
-        for (Map.Entry<String, String> entry : allScripts.entrySet()) {
-            String scriptName = entry.getKey();
-            String base64Content = entry.getValue();
-
+        allScripts.forEach((scriptName, base64Content) -> {
             if (isValidScriptEntry(scriptName, base64Content)) {
                 String fileName = ensureFileExtension(scriptName.trim());
                 scripts.addProperty(fileName, base64Content.trim());
@@ -348,7 +649,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
                 log.warn("유효하지 않은 스크립트 엔트리: name={}, contentEmpty={}",
                         scriptName, base64Content == null || base64Content.isEmpty());
             }
-        }
+        });
 
         log.debug("스크립트 객체 생성 완료: {} 개의 스크립트", scripts.size());
         return scripts;
@@ -375,10 +676,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             }
         }
 
-        for (String keyword : uniqueKeywords) {
-            array.add(keyword);
-        }
-
+        uniqueKeywords.forEach(array::add);
         return array;
     }
 
