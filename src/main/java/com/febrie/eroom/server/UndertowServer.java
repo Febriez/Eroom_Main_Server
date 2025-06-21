@@ -1,98 +1,95 @@
 package com.febrie.eroom.server;
 
-import com.febrie.eroom.config.ApiKeyConfig;
-import com.febrie.eroom.config.GsonConfig;
+import com.febrie.eroom.config.*;
+import com.febrie.eroom.factory.ServiceFactory;
+import com.febrie.eroom.factory.ServiceFactoryImpl;
+import com.febrie.eroom.filter.ApiKeyAuthFilter;
 import com.febrie.eroom.handler.ApiHandler;
-import com.febrie.eroom.service.AnthropicService;
+import com.febrie.eroom.handler.RequestHandler;
 import com.febrie.eroom.service.JobResultStore;
-import com.febrie.eroom.service.MeshyService;
-import com.febrie.eroom.service.RoomRequestQueueManager;
-import com.febrie.eroom.service.impl.RoomServiceImpl;
-import com.febrie.eroom.util.ConfigUtil;
+import com.febrie.eroom.service.queue.QueueManager;
+import com.febrie.eroom.service.queue.RoomRequestQueueManager;
+import com.febrie.eroom.service.room.RoomService;
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
+import io.undertow.server.HttpHandler;
 import io.undertow.server.RoutingHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class UndertowServer {
-
+public class UndertowServer implements Server {
     private static final Logger log = LoggerFactory.getLogger(UndertowServer.class);
-    // 나중에 늘릴 때 이 값만 변경
     private static final int MAX_CONCURRENT_REQUESTS = 1;
 
     private final Undertow server;
-    private final RoomRequestQueueManager queueManager;
-    private final RoomServiceImpl roomService;
+    private final QueueManager queueManager;
+    private final RoomService roomService;
 
     public UndertowServer(int port) {
-        // 1. 서비스 초기화
-        GsonConfig gsonConfig = new GsonConfig();
-        Gson gson = gsonConfig.createGson();
+        // Dependencies initialization
+        Gson gson = new GsonBuilder().setPrettyPrinting().create();
+        ConfigurationManager configManager = new JsonConfigurationManager();
+        ApiKeyProvider apiKeyProvider = new EnvironmentApiKeyProvider();
+        AuthProvider authProvider = new EnvironmentAuthProvider();
 
-        ApiKeyConfig apiKeyConfig = new ApiKeyConfig();
-        ConfigUtil configUtil = new ConfigUtil();
+        // Service factory
+        ServiceFactory serviceFactory = new ServiceFactoryImpl(apiKeyProvider, configManager);
 
-        AnthropicService anthropicService = new AnthropicService(apiKeyConfig, configUtil);
-        MeshyService meshyService = new MeshyService(apiKeyConfig);
-
-        // RoomService 구현체 생성
-        roomService = new RoomServiceImpl(anthropicService, meshyService, configUtil);
-
-        // 2. 중앙 결과 저장소 생성
+        // Core services
+        roomService = serviceFactory.createRoomService();
         JobResultStore resultStore = new JobResultStore();
-
-        // 3. 큐 매니저 생성 (JobResultStore 주입)
         queueManager = new RoomRequestQueueManager(roomService, resultStore, MAX_CONCURRENT_REQUESTS);
 
-        log.info("최대 동시 처리 요청 수: {}", MAX_CONCURRENT_REQUESTS);
+        // Handler
+        RequestHandler apiHandler = new ApiHandler(gson, queueManager, resultStore);
 
-        // 4. API 핸들러 생성 (JobResultStore 주입)
-        ApiHandler apiHandler = new ApiHandler(gson, queueManager, resultStore);
+        // Routing
+        RoutingHandler routingHandler = createRouting(apiHandler);
+        HttpHandler apiKeyProtectedHandler = new ApiKeyAuthFilter(routingHandler, authProvider.getApiKey());
 
-        // 5. 라우팅 설정 변경
-        RoutingHandler routingHandler = Handlers.routing()
-                .get("/", apiHandler::handleRoot)
-                .get("/health", apiHandler::handleHealth)
-                .get("/queue/status", apiHandler::handleQueueStatus)
-                .post("/room/create", apiHandler::handleRoomCreate)
-                // 결과 조회를 위한 새로운 GET 엔드포인트 추가
-                .get("/room/result", apiHandler::handleRoomResult);
-
-        // 서버 생성
+        // Server creation
         server = Undertow.builder()
                 .addHttpListener(port, "0.0.0.0")
-                .setHandler(routingHandler)
+                .setHandler(apiKeyProtectedHandler)
                 .build();
 
         log.info("Undertow 서버가 포트 {}에서 시작 준비 완료", port);
     }
 
+    private RoutingHandler createRouting(RequestHandler handler) {
+        return Handlers.routing()
+                .get("/", handler::handleRoot)
+                .get("/health", handler::handleHealth)
+                .get("/queue/status", handler::handleQueueStatus)
+                .post("/room/create", handler::handleRoomCreate)
+                .get("/room/result", handler::handleRoomResult);
+    }
+
+    @Override
     public void start() {
         server.start();
         log.info("서버가 성공적으로 시작되었습니다");
     }
 
+    @Override
     public void stop() {
         if (server != null) {
             log.info("서버 종료 시작...");
 
-            // 큐 매니저 종료
             if (queueManager != null) {
                 queueManager.shutdown();
             }
 
-            // RoomService 종료 (AutoCloseable 구현)
-            if (roomService != null) {
+            if (roomService instanceof AutoCloseable) {
                 try {
-                    roomService.close();
+                    ((AutoCloseable) roomService).close();
                 } catch (Exception e) {
                     log.error("RoomService 종료 중 오류", e);
                 }
             }
 
-            // 서버 종료
             server.stop();
             log.info("서버가 중지되었습니다");
         }

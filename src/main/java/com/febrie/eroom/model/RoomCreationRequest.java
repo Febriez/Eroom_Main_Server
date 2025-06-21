@@ -18,7 +18,6 @@ public class RoomCreationRequest {
     @SerializedName("room_prefab")
     private String roomPrefab;
 
-    // 난이도 검증 및 기본값 처리
     @Nullable
     public String getValidatedDifficulty() {
         if (difficulty == null || difficulty.trim().isEmpty()) {
