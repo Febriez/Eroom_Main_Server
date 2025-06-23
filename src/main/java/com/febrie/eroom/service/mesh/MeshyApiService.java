@@ -38,7 +38,7 @@ public class MeshyApiService implements MeshService {
             return processModelGeneration(prompt, objectName, apiKey);
         } catch (Exception e) {
             log.error("{}의 모델 생성 중 오류 발생: {}", objectName, e.getMessage());
-            return "error-general-" + UUID.randomUUID().toString();
+            return "error-general-" + UUID.randomUUID();
         }
     }
 
