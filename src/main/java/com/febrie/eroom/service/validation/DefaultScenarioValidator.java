@@ -1,8 +1,8 @@
 package com.febrie.eroom.service.validation;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,6 +18,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         validateScenarioData(scenario);
         validateObjectInstructions(scenario);
         validateObjectFields(scenario);
+        validateKeywordCount(scenario);  // 추가된 검증
         validateObjectDiversity(scenario);
     }
 
@@ -42,6 +43,11 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         String exitMechanism = scenarioData.get("exit_mechanism").getAsString();
         if (!exitMechanism.equals("key") && !exitMechanism.equals("code") && !exitMechanism.equals("logic_unlock")) {
             throw new RuntimeException("잘못된 exit_mechanism: " + exitMechanism + ". 허용값: key, code, logic_unlock");
+        }
+
+        // keyword_count 검증
+        if (!scenarioData.has("keyword_count")) {
+            throw new RuntimeException("keyword_count가 누락되었습니다");
         }
     }
 
@@ -89,28 +95,28 @@ public class DefaultScenarioValidator implements ScenarioValidator {
                 continue;
             }
 
-            // interactive_description 또는 monologue_texts 중 하나는 있어야 함
+            // interactive_description 또는 monologue_messages 중 하나는 있어야 함
             boolean hasInteractive = obj.has("interactive_description");
             boolean hasMonologue = obj.has("monologue_messages");
 
             if (!hasInteractive && !hasMonologue) {
                 throw new RuntimeException(String.format(
-                        "오브젝트 '%s'에 interactive_description 또는 monologue_texts가 없습니다", name));
+                        "오브젝트 '%s'에 interactive_description 또는 monologue_messages가 없습니다", name));
             }
 
             // 둘 다 있으면 안됨
             if (hasInteractive && hasMonologue) {
-                log.warn("오브젝트 '{}'에 interactive_description과 monologue_texts가 모두 있습니다. " +
+                log.warn("오브젝트 '{}'에 interactive_description과 monologue_messages가 모두 있습니다. " +
                         "interactive_description만 사용됩니다.", name);
             }
 
+            // monologue_messages 배열 검증
             if (hasMonologue) {
-                JsonElement messages = obj.get("monologue_messages");
-                if (!messages.isJsonArray()) {
+                if (!obj.get("monologue_messages").isJsonArray()) {
                     throw new RuntimeException(String.format(
                             "오브젝트 '%s'의 monologue_messages가 배열이 아닙니다", name));
                 }
-                JsonArray msgArray = messages.getAsJsonArray();
+                JsonArray msgArray = obj.getAsJsonArray("monologue_messages");
                 if (msgArray.size() < 15) {
                     log.warn("오브젝트 '{}'의 monologue_messages가 {}개로 15개 미만입니다",
                             name, msgArray.size());
@@ -131,7 +137,61 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         }
     }
 
-    private void validateObjectDiversity(JsonObject scenario) {
+    private void validateKeywordCount(@NotNull JsonObject scenario) {
+        JsonObject scenarioData = scenario.getAsJsonObject("scenario_data");
+        String difficulty = scenarioData.get("difficulty").getAsString();
+        JsonObject keywordCount = scenarioData.getAsJsonObject("keyword_count");
+
+        int userCount = keywordCount.get("user").getAsInt();
+        int expandedCount = keywordCount.get("expanded").getAsInt();
+        int total = keywordCount.get("total").getAsInt();
+
+        // 합계 검증
+        if (userCount + expandedCount != total) {
+            throw new RuntimeException(String.format(
+                    "키워드 수 계산 오류: user(%d) + expanded(%d) != total(%d)",
+                    userCount, expandedCount, total));
+        }
+
+        // 난이도별 검증
+        boolean valid = switch (difficulty.toLowerCase()) {
+            case "easy" -> total >= 3 && total <= 5;
+            case "normal" -> total >= 6 && total <= 7;
+            case "hard" -> total >= 8 && total <= 9;
+            default -> false;
+        };
+
+        if (!valid) {
+            throw new RuntimeException(String.format(
+                    "%s 난이도에서 키워드 수가 잘못되었습니다. 생성된: %d개 (user: %d, expanded: %d)",
+                    difficulty, total, userCount, expandedCount));
+        }
+
+        // 새로 생성된 오브젝트 수 검증
+        int newObjectCount = countNewObjects(scenario.getAsJsonArray("object_instructions"));
+        if (newObjectCount != total) {
+            throw new RuntimeException(String.format(
+                    "새 오브젝트 수(%d)가 총 키워드 수(%d)와 일치하지 않습니다",
+                    newObjectCount, total));
+        }
+
+        log.info("키워드 검증 완료: {} 난이도, 총 {}개 (user: {}, expanded: {})",
+                difficulty, total, userCount, expandedCount);
+    }
+
+    private int countNewObjects(@NotNull JsonArray objectInstructions) {
+        int count = 0;
+        for (int i = 0; i < objectInstructions.size(); i++) {
+            JsonObject obj = objectInstructions.get(i).getAsJsonObject();
+            String type = obj.has("type") ? obj.get("type").getAsString() : "";
+            if ("interactive_object".equals(type)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private void validateObjectDiversity(@NotNull JsonObject scenario) {
         JsonArray objectInstructions = scenario.getAsJsonArray("object_instructions");
         Set<String> objectBaseNames = new HashSet<>();
         Set<String> duplicateWarnings = new HashSet<>();
@@ -165,6 +225,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         log.info("새로 생성된 오브젝트 타입: {} 종류", objectBaseNames.size());
     }
 
+    @NotNull
     private String extractBaseName(String objectName) {
         // 일반적인 수식어 제거
         String[] modifiers = {"Crystal", "Modern", "Ancient", "Victorian", "Golden", "Silver",
