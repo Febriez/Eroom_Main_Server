@@ -1,14 +1,21 @@
 package com.febrie.eroom.exception;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+/**
+ * API 키를 사용할 수 없을 때 발생하는 예외
+ */
+public class NoAvailableKeyException extends RuntimeException {
 
-public class NoAvailableKeyException extends IllegalStateException {
-
-    private static final Logger log = LoggerFactory.getLogger(NoAvailableKeyException.class);
-
+    /**
+     * 메시지와 함께 예외를 생성합니다.
+     */
     public NoAvailableKeyException(String message) {
         super(message);
-        log.error(message);
+    }
+
+    /**
+     * 메시지와 원인 예외와 함께 예외를 생성합니다.
+     */
+    public NoAvailableKeyException(String message, Throwable cause) {
+        super(message, cause);
     }
 }
