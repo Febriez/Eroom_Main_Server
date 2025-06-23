@@ -85,6 +85,15 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     private void validateObjectFields(JsonObject scenario) {
         JsonArray objectInstructions = scenario.getAsJsonArray("object_instructions");
 
+
+        boolean isFreeModeling = false;
+        if (scenario.has("scenario_data")) {
+            JsonObject scenarioData = scenario.getAsJsonObject("scenario_data");
+            if (scenarioData.has("is_free_modeling")) {
+                isFreeModeling = scenarioData.get("is_free_modeling").getAsBoolean();
+            }
+        }
+
         for (int i = 0; i < objectInstructions.size(); i++) {
             JsonObject obj = objectInstructions.get(i).getAsJsonObject();
             String name = obj.has("name") ? obj.get("name").getAsString() : "unknown";
@@ -133,6 +142,19 @@ public class DefaultScenarioValidator implements ScenarioValidator {
             if ("interactive_object".equals(type) && !obj.has("visual_description")) {
                 throw new RuntimeException(String.format(
                         "새 오브젝트 '%s'에 visual_description이 없습니다", name));
+            }
+            if ("interactive_object".equals(type)) {
+                if (isFreeModeling) {
+                    if (!obj.has("simple_visual_description")) {
+                        throw new RuntimeException(String.format(
+                                "무료 모델링 모드에서 새 오브젝트 '%s'에 simple_visual_description이 없습니다", name));
+                    }
+                } else {
+                    if (!obj.has("visual_description")) {
+                        throw new RuntimeException(String.format(
+                                "유료 모델링 모드에서 새 오브젝트 '%s'에 visual_description이 없습니다", name));
+                    }
+                }
             }
         }
     }

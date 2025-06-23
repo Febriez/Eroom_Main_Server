@@ -37,14 +37,17 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
     private final AiService aiService;
     private final MeshService meshService;
+    private final MeshService localModelService;
     private final ConfigurationManager configManager;
     private final ExecutorService executorService;
     private final RequestValidator requestValidator;
     private final ScenarioValidator scenarioValidator;
 
-    public RoomServiceImpl(AiService aiService, MeshService meshService, ConfigurationManager configManager) {
+    public RoomServiceImpl(AiService aiService, MeshService meshService,
+                           MeshService localModelService, ConfigurationManager configManager) {
         this.aiService = aiService;
         this.meshService = meshService;
+        this.localModelService = localModelService;
         this.configManager = configManager;
         this.executorService = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
         this.requestValidator = new RoomRequestValidator();
@@ -53,8 +56,9 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
     @Override
     public JsonObject createRoom(@NotNull RoomCreationRequest request, String ruid) {
-        log.info("통합 방 생성 시작: ruid={}, user_uuid={}, theme={}, difficulty={}",
-                ruid, request.getUuid(), request.getTheme(), request.getValidatedDifficulty());
+        log.info("통합 방 생성 시작: ruid={}, user_uuid={}, theme={}, difficulty={}, isFreeModeling={}",
+                ruid, request.getUuid(), request.getTheme(), request.getValidatedDifficulty(),
+                request.isFreeModeling());
 
         try {
             requestValidator.validate(request);
@@ -64,7 +68,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
         try {
             JsonObject scenario = createIntegratedScenario(request, ruid);
-            List<CompletableFuture<ModelGenerationResult>> modelFutures = startModelGeneration(scenario);
+            List<CompletableFuture<ModelGenerationResult>> modelFutures =
+                    startModelGeneration(scenario, request.isFreeModeling());
             Map<String, String> allScripts = createUnifiedScripts(scenario);
             JsonObject modelTracking = waitForModels(modelFutures);
 
@@ -124,6 +129,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         scenarioRequest.addProperty("ruid", ruid);
         scenarioRequest.addProperty("theme", request.getTheme().trim());
         scenarioRequest.addProperty("difficulty", request.getValidatedDifficulty());
+        scenarioRequest.addProperty("is_free_modeling", request.isFreeModeling());
 
         // Keywords 배열 추가
         scenarioRequest.add("keywords", createKeywordsArray(request.getKeywords()));
@@ -135,8 +141,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         // 추가 메타데이터
         scenarioRequest.addProperty("existing_objects_count", existingObjectsArray.size());
 
-        log.info("시나리오 요청 생성 완료 - keywords: {}, existing_objects: {}",
-                request.getKeywords().length, existingObjectsArray.size());
+        log.info("시나리오 요청 생성 완료 - keywords: {}, existing_objects: {}, is_free_modeling: {}",
+                request.getKeywords().length, existingObjectsArray.size(), request.isFreeModeling());
 
         return scenarioRequest;
     }
@@ -154,7 +160,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private List<CompletableFuture<ModelGenerationResult>> startModelGeneration(@NotNull JsonObject scenario) {
+    private List<CompletableFuture<ModelGenerationResult>> startModelGeneration(
+            @NotNull JsonObject scenario, boolean isFreeModeling) {
         List<CompletableFuture<ModelGenerationResult>> futures = new ArrayList<>();
         JsonArray objectInstructions = scenario.getAsJsonArray("object_instructions");
 
@@ -163,20 +170,32 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             return futures;
         }
 
-        log.info("3D 모델 생성 시작: {} 개의 오브젝트 인스트럭션", objectInstructions.size());
+        log.info("3D 모델 생성 시작: {} 개의 오브젝트 인스트럭션, 무료 모델링: {}",
+                objectInstructions.size(), isFreeModeling);
 
         for (int i = 0; i < objectInstructions.size(); i++) {
             JsonObject instruction = objectInstructions.get(i).getAsJsonObject();
 
-            if (shouldSkipModelGeneration(instruction)) {
+            if (shouldSkipModelGeneration(instruction, isFreeModeling)) {
                 continue;
             }
 
             String objectName = instruction.get("name").getAsString();
-            String visualDescription = instruction.get("visual_description").getAsString();
+            String visualDescription;
+
+            // isFreeModeling에 따라 다른 필드 사용
+            if (isFreeModeling) {
+                visualDescription = instruction.has("simple_visual_description")
+                        ? instruction.get("simple_visual_description").getAsString()
+                        : "";
+            } else {
+                visualDescription = instruction.has("visual_description")
+                        ? instruction.get("visual_description").getAsString()
+                        : "";
+            }
 
             if (isValidForModelGeneration(objectName, visualDescription)) {
-                futures.add(createModelTask(visualDescription, objectName, i));
+                futures.add(createModelTask(visualDescription, objectName, i, isFreeModeling));
             }
         }
 
@@ -184,7 +203,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         return futures;
     }
 
-    private boolean shouldSkipModelGeneration(@NotNull JsonObject instruction) {
+    private boolean shouldSkipModelGeneration(@NotNull JsonObject instruction, boolean isFreeModeling) {
         String type = instruction.has("type") ? instruction.get("type").getAsString() : "";
 
         if (TYPE_GAME_MANAGER.equals(type)) {
@@ -198,9 +217,11 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             return true;
         }
 
-        // visual_description이 있는 새 오브젝트만 모델 생성
-        if (!instruction.has("visual_description")) {
-            log.debug("visual_description이 없는 오브젝트 '{}'는 모델 생성에서 건너뜁니다.",
+        // isFreeModeling에 따라 다른 필드 체크
+        String descriptionField = isFreeModeling ? "simple_visual_description" : "visual_description";
+        if (!instruction.has(descriptionField)) {
+            log.debug("{}이 없는 오브젝트 '{}'는 모델 생성에서 건너뜁니다.",
+                    descriptionField,
                     instruction.has("name") ? instruction.get("name").getAsString() : "unknown");
             return true;
         }
@@ -221,12 +242,17 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    @Contract("_, _, _ -> new")
-    private CompletableFuture<ModelGenerationResult> createModelTask(String prompt, String name, int index) {
+    @Contract("_, _, _, _ -> new")
+    private CompletableFuture<ModelGenerationResult> createModelTask(
+            String prompt, String name, int index, boolean isFreeModeling) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                log.debug("3D 모델 생성 요청 [{}]: name='{}', prompt='{}자'", index, name, prompt.length());
-                String trackingId = meshService.generateModel(prompt, name, index);
+                log.debug("3D 모델 생성 요청 [{}]: name='{}', prompt='{}자', free={}",
+                        index, name, prompt.length(), isFreeModeling);
+
+                // isFreeModeling에 따라 다른 서비스 사용
+                MeshService modelService = isFreeModeling ? localModelService : meshService;
+                String trackingId = modelService.generateModel(prompt, name, index);
 
                 String resultId = (trackingId != null && !trackingId.trim().isEmpty())
                         ? trackingId

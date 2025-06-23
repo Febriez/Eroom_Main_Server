@@ -22,6 +22,10 @@ public class MeshyApiService implements MeshService {
     private static final int MAX_POLLING_ATTEMPTS = 30;
     private static final int POLLING_INTERVAL_MS = 10000;
 
+    // 폴리곤 수 설정 상수 추가
+    private static final int PREVIEW_POLYCOUNT = 4096;
+    private static final int REFINE_POLYCOUNT = 4096; // 완성본도 동일하게 4096으로 제한
+
     private final ApiKeyProvider apiKeyProvider;
     private final OkHttpClient httpClient;
 
@@ -93,7 +97,8 @@ public class MeshyApiService implements MeshService {
                 return "error-refine-" + previewId;
             }
 
-            log.info("{}의 정제 작업이 ID: {}로 시작됨. 완료 대기 중...", objectName, refineId);
+            log.info("{}의 정제 작업이 ID: {}로 시작됨 (target_polycount: {}). 완료 대기 중...",
+                    objectName, refineId, REFINE_POLYCOUNT);
 
             // Refine 작업 완료 대기
             if (isTaskFailed(refineId, apiKey)) {
@@ -144,8 +149,8 @@ public class MeshyApiService implements MeshService {
         requestBody.addProperty("art_style", "realistic");
         requestBody.addProperty("ai_model", "meshy-4");
         requestBody.addProperty("topology", "triangle");
-        requestBody.addProperty("target_polycount", 4096);
-        requestBody.addProperty("should_remesh", false);
+        requestBody.addProperty("target_polycount", PREVIEW_POLYCOUNT); // 4096
+        requestBody.addProperty("should_remesh", false); // Preview에서는 remesh 건너뛰기
         return requestBody;
     }
 
@@ -166,7 +171,15 @@ public class MeshyApiService implements MeshService {
         JsonObject requestBody = new JsonObject();
         requestBody.addProperty("mode", "refine");
         requestBody.addProperty("preview_task_id", previewId);
-        requestBody.addProperty("enable_pbr", false);
+        requestBody.addProperty("enable_pbr", false); // PBR 비활성화로 속도 향상
+
+        // Refine 단계에서도 폴리곤 수 제한 추가
+        requestBody.addProperty("target_polycount", REFINE_POLYCOUNT); // 4096으로 제한
+        requestBody.addProperty("topology", "triangle");
+        requestBody.addProperty("should_remesh", false); // remesh 비활성화로 속도 향상
+
+        log.info("Refine 요청 설정 - target_polycount: {}, enable_pbr: false, should_remesh: false", REFINE_POLYCOUNT);
+
         return requestBody;
     }
 

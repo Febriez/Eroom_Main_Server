@@ -21,6 +21,15 @@ public class RoomCreationRequest {
     @SerializedName("existing_objects")
     private List<ExistingObject> existingObjects;
 
+    // 추가할 필드
+    @SerializedName("is_free_modeling")
+    private Boolean isFreeModeling;
+
+    // getter 메서드 추가
+    public boolean isFreeModeling() {
+        return isFreeModeling != null && isFreeModeling;
+    }
+
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
