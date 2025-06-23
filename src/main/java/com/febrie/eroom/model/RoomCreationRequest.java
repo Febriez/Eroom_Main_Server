@@ -17,9 +17,6 @@ public class RoomCreationRequest {
     private String[] keywords;
     private String difficulty;
 
-    @SerializedName("room_prefab")
-    private String roomPrefab;
-
     // 새로 추가된 필드
     @SerializedName("existing_objects")
     private List<ExistingObject> existingObjects;

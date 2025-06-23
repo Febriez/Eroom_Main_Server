@@ -26,21 +26,14 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     private static final int MODEL_TIMEOUT_MINUTES = 10;
     private static final int EXECUTOR_SHUTDOWN_TIMEOUT_SECONDS = 60;
     private static final int PARALLEL_THRESHOLD = 10;
-    private static final int BATCH_SIZE = 5;  // 8에서 5로 줄임
-    private static final int FIRST_BATCH_SIZE = 5;  // 7에서 5로 줄임
+    private static final int BATCH_SIZE = 5;
+    private static final int FIRST_BATCH_SIZE = 5;
     private static final int THREAD_POOL_SIZE = 10;
 
     // 오브젝트 타입 상수
     private static final String TYPE_GAME_MANAGER = "game_manager";
     private static final String TYPE_EXISTING_INTERACTIVE = "existing_interactive_object";
     private static final String TYPE_INTERACTIVE = "interactive_object";
-
-    // 난이도별 예상 오브젝트 수
-    private static final Map<String, Integer> EXPECTED_OBJECTS_BY_DIFFICULTY = Map.of(
-            "hard", 35,
-            "normal", 22,
-            "easy", 12
-    );
 
     private final AiService aiService;
     private final MeshService meshService;
@@ -72,7 +65,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         try {
             JsonObject scenario = createIntegratedScenario(request, ruid);
             List<CompletableFuture<ModelGenerationResult>> modelFutures = startModelGeneration(scenario);
-            Map<String, String> allScripts = createUnifiedScripts(scenario, request.getRoomPrefab());
+            Map<String, String> allScripts = createUnifiedScripts(scenario);
             JsonObject modelTracking = waitForModels(modelFutures);
 
             JsonObject response = buildFinalResponse(request, ruid, scenario, allScripts, modelTracking);
@@ -91,6 +84,14 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     @NotNull
     private JsonObject createIntegratedScenario(RoomCreationRequest request, String ruid) {
         try {
+            // ExitDoor 존재 검증
+            boolean hasExitDoor = request.getExistingObjectsSafe().stream()
+                    .anyMatch(obj -> "ExitDoor".equalsIgnoreCase(obj.getName()));
+
+            if (!hasExitDoor) {
+                throw new RuntimeException("ExitDoor가 existing_objects에 포함되어야 합니다.");
+            }
+
             String prompt = configManager.getPrompt("scenario");
             JsonObject scenarioRequest = buildScenarioRequest(request, ruid);
 
@@ -123,7 +124,6 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         scenarioRequest.addProperty("ruid", ruid);
         scenarioRequest.addProperty("theme", request.getTheme().trim());
         scenarioRequest.addProperty("difficulty", request.getValidatedDifficulty());
-        scenarioRequest.addProperty("room_prefab_url", request.getRoomPrefab().trim());
 
         // Keywords 배열 추가
         scenarioRequest.add("keywords", createKeywordsArray(request.getKeywords()));
@@ -134,11 +134,9 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
         // 추가 메타데이터
         scenarioRequest.addProperty("existing_objects_count", existingObjectsArray.size());
-        int expectedTotal = getExpectedObjectCount(request.getValidatedDifficulty());
-        scenarioRequest.addProperty("expected_total_objects", expectedTotal);
 
-        log.info("시나리오 요청 생성 완료 - keywords: {}, existing_objects: {}, expected_total: {}",
-                request.getKeywords().length, existingObjectsArray.size(), expectedTotal);
+        log.info("시나리오 요청 생성 완료 - keywords: {}, existing_objects: {}",
+                request.getKeywords().length, existingObjectsArray.size());
 
         return scenarioRequest;
     }
@@ -153,10 +151,6 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             array.add(jsonObj);
         }
         return array;
-    }
-
-    private int getExpectedObjectCount(String difficulty) {
-        return EXPECTED_OBJECTS_BY_DIFFICULTY.getOrDefault(difficulty, EXPECTED_OBJECTS_BY_DIFFICULTY.get("normal"));
     }
 
     @NotNull
@@ -204,8 +198,10 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
             return true;
         }
 
-        if (!instruction.has("name") || !instruction.has("visual_description")) {
-            log.warn("필수 필드(name, visual_description)가 없어 건너뜁니다.");
+        // visual_description이 있는 새 오브젝트만 모델 생성
+        if (!instruction.has("visual_description")) {
+            log.debug("visual_description이 없는 오브젝트 '{}'는 모델 생성에서 건너뜁니다.",
+                    instruction.has("name") ? instruction.get("name").getAsString() : "unknown");
             return true;
         }
 
@@ -245,7 +241,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private Map<String, String> createUnifiedScripts(JsonObject scenario, String roomPrefabUrl) {
+    private Map<String, String> createUnifiedScripts(JsonObject scenario) {
         try {
             JsonArray objectInstructions = scenario.getAsJsonArray("object_instructions");
             int totalObjects = objectInstructions != null ? objectInstructions.size() : 0;
@@ -257,10 +253,10 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
             if (totalObjects < PARALLEL_THRESHOLD) {
                 log.info("단일 요청 모드 사용 (오브젝트 {}개)", totalObjects);
-                return createUnifiedScriptsSingleRequest(scenario, roomPrefabUrl);
+                return createUnifiedScriptsSingleRequest(scenario);
             } else {
                 log.info("병렬 처리 모드 사용 (오브젝트 {}개)", totalObjects);
-                return createUnifiedScriptsParallel(scenario, roomPrefabUrl);
+                return createUnifiedScriptsParallel(scenario);
             }
 
         } catch (Exception e) {
@@ -268,13 +264,13 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         }
     }
 
-    private Map<String, String> createUnifiedScriptsSingleRequest(JsonObject scenario, String roomPrefabUrl) {
+    private Map<String, String> createUnifiedScriptsSingleRequest(JsonObject scenario) {
         String prompt = configManager.getPrompt("unified_scripts");
-        JsonObject scriptRequest = buildScriptRequest(scenario, roomPrefabUrl);
+        JsonObject scriptRequest = buildScriptRequest(scenario);
         return aiService.generateUnifiedScripts(prompt, scriptRequest);
     }
 
-    private Map<String, String> createUnifiedScriptsParallel(JsonObject scenario, String roomPrefabUrl) {
+    private Map<String, String> createUnifiedScriptsParallel(JsonObject scenario) {
         Map<String, String> allScripts = new ConcurrentHashMap<>();
 
         // GameManager와 다른 오브젝트 분리
@@ -288,11 +284,11 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
                 gameManagerList.size(), otherObjects.size());
 
         // 첫 번째 배치 처리 (GameManager 포함)
-        String gameManagerScript = processFirstBatch(scenario, roomPrefabUrl,
+        String gameManagerScript = processFirstBatch(scenario,
                 gameManagerList, otherObjects, allScripts);
 
         // 나머지 배치 병렬 처리
-        processRemainingBatches(scenario, roomPrefabUrl, otherObjects,
+        processRemainingBatches(scenario, otherObjects,
                 gameManagerScript, allScripts);
 
         log.info("병렬 스크립트 생성 완료: 총 {} 개", allScripts.size());
@@ -313,7 +309,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private String processFirstBatch(JsonObject scenario, String roomPrefabUrl,
+    private String processFirstBatch(JsonObject scenario,
                                      List<JsonObject> gameManagerList,
                                      List<JsonObject> otherObjects,
                                      Map<String, String> allScripts) {
@@ -326,7 +322,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
                 gameManagerList.size(), firstBatchSize, firstBatch.size());
 
         // 첫 배치 동기 실행
-        JsonObject firstBatchRequest = buildBatchRequest(scenario, roomPrefabUrl,
+        JsonObject firstBatchRequest = buildBatchRequest(scenario,
                 firstBatch, true, null);
 
         Map<String, String> firstBatchResult = aiService.generateUnifiedScripts(
@@ -344,7 +340,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         return gameManagerScript;
     }
 
-    private void processRemainingBatches(JsonObject scenario, String roomPrefabUrl,
+    private void processRemainingBatches(JsonObject scenario,
                                          List<JsonObject> allObjects,
                                          String gameManagerScript,
                                          Map<String, String> allScripts) {
@@ -367,7 +363,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
                     absoluteBatchStart + 1, FIRST_BATCH_SIZE + batchEnd, batch.size());
 
             CompletableFuture<Map<String, String>> future = CompletableFuture.supplyAsync(() ->
-                            generateBatchScripts(batch, scenario, roomPrefabUrl,
+                            generateBatchScripts(batch, scenario,
                                     absoluteBatchStart, gameManagerScript),
                     executorService
             );
@@ -403,7 +399,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private JsonObject buildBatchRequest(JsonObject scenario, String roomPrefabUrl,
+    private JsonObject buildBatchRequest(JsonObject scenario,
                                          List<JsonObject> batch, boolean isFirstBatch,
                                          String gameManagerScript) {
         JsonObject request = new JsonObject();
@@ -412,8 +408,6 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         JsonArray batchArray = new JsonArray();
         batch.forEach(batchArray::add);
         request.add("object_instructions", batchArray);
-
-        request.addProperty("room_prefab_url", roomPrefabUrl);
 
         // 배치에 포함된 오브젝트 이름 로깅
         List<String> objectNames = new ArrayList<>();
@@ -458,12 +452,11 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
 
     private Map<String, String> generateBatchScripts(List<JsonObject> batch,
                                                      JsonObject scenario,
-                                                     String roomPrefabUrl,
                                                      int batchStartIndex,
                                                      String gameManagerScript) {
         try {
             String prompt = configManager.getPrompt("scripts_batch");
-            JsonObject request = buildBatchRequest(scenario, roomPrefabUrl,
+            JsonObject request = buildBatchRequest(scenario,
                     batch, false, gameManagerScript);
 
             request.addProperty("batch_index", batchStartIndex);
@@ -500,11 +493,10 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     }
 
     @NotNull
-    private JsonObject buildScriptRequest(@NotNull JsonObject scenario, String roomPrefabUrl) {
+    private JsonObject buildScriptRequest(@NotNull JsonObject scenario) {
         JsonObject scriptRequest = new JsonObject();
         scriptRequest.add("scenario_data", scenario.getAsJsonObject("scenario_data"));
         scriptRequest.add("object_instructions", scenario.getAsJsonArray("object_instructions"));
-        scriptRequest.addProperty("room_prefab_url", roomPrefabUrl);
 
         if (scenario.has("model_scales")) {
             scriptRequest.add("model_scales", scenario.getAsJsonObject("model_scales"));
@@ -616,7 +608,6 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         response.addProperty("theme", request.getTheme());
         response.addProperty("difficulty", request.getValidatedDifficulty());
         response.add("keywords", createKeywordsArray(request.getKeywords()));
-        response.addProperty("room_prefab", request.getRoomPrefab());
         response.add("scenario", scenario);
         response.add("scripts", buildScriptsObject(allScripts));
         response.add("model_tracking", tracking);
@@ -624,13 +615,15 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
         response.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
 
         // 최종 결과 통계 로깅
-        int expectedObjects = scenario.getAsJsonArray("object_instructions").size();
+        int totalObjects = scenario.getAsJsonArray("object_instructions").size();
         int generatedScripts = allScripts.size();
         log.info("=== 방 생성 완료 통계 ===");
         log.info("RUID: {}", ruid);
-        log.info("예상 오브젝트 수: {}", expectedObjects);
+        log.info("총 오브젝트 수: {}", totalObjects);
         log.info("생성된 스크립트 수: {}", generatedScripts);
-        log.info("스크립트 생성률: {}%", (generatedScripts * 100) / expectedObjects);
+        if (totalObjects > 0) {
+            log.info("스크립트 생성률: {}%", (generatedScripts * 100) / totalObjects);
+        }
         log.info("생성된 스크립트 목록: {}", String.join(", ", allScripts.keySet()));
         log.info("========================");
 

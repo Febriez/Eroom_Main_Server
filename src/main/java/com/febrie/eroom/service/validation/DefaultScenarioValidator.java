@@ -1,6 +1,7 @@
 package com.febrie.eroom.service.validation;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +17,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         validateStructure(scenario);
         validateScenarioData(scenario);
         validateObjectInstructions(scenario);
+        validateObjectFields(scenario);
         validateObjectDiversity(scenario);
     }
 
@@ -31,6 +33,16 @@ public class DefaultScenarioValidator implements ScenarioValidator {
                 !scenarioData.has("escape_condition") || !scenarioData.has("puzzle_flow")) {
             throw new RuntimeException("시나리오 데이터가 불완전합니다");
         }
+
+        // exit_mechanism 검증
+        if (!scenarioData.has("exit_mechanism")) {
+            throw new RuntimeException("exit_mechanism이 누락되었습니다");
+        }
+
+        String exitMechanism = scenarioData.get("exit_mechanism").getAsString();
+        if (!exitMechanism.equals("key") && !exitMechanism.equals("code") && !exitMechanism.equals("logic_unlock")) {
+            throw new RuntimeException("잘못된 exit_mechanism: " + exitMechanism + ". 허용값: key, code, logic_unlock");
+        }
     }
 
     private void validateObjectInstructions(JsonObject scenario) {
@@ -39,9 +51,83 @@ public class DefaultScenarioValidator implements ScenarioValidator {
             throw new RuntimeException("오브젝트 설명이 없습니다");
         }
 
+        // GameManager 검증
         JsonObject firstObject = objectInstructions.get(0).getAsJsonObject();
         if (!firstObject.has("name") || !firstObject.get("name").getAsString().equals("GameManager")) {
             throw new RuntimeException("첫 번째 오브젝트가 GameManager가 아닙니다");
+        }
+
+        // ExitDoor 검증
+        boolean hasExitDoor = false;
+        for (int i = 0; i < objectInstructions.size(); i++) {
+            JsonObject obj = objectInstructions.get(i).getAsJsonObject();
+            if (obj.has("name") && "ExitDoor".equals(obj.get("name").getAsString())) {
+                hasExitDoor = true;
+                // ExitDoor는 반드시 interactive_description이 있어야 함
+                if (!obj.has("interactive_description")) {
+                    throw new RuntimeException("ExitDoor에 interactive_description이 없습니다");
+                }
+                break;
+            }
+        }
+
+        if (!hasExitDoor) {
+            throw new RuntimeException("ExitDoor가 object_instructions에 없습니다");
+        }
+    }
+
+    private void validateObjectFields(JsonObject scenario) {
+        JsonArray objectInstructions = scenario.getAsJsonArray("object_instructions");
+
+        for (int i = 0; i < objectInstructions.size(); i++) {
+            JsonObject obj = objectInstructions.get(i).getAsJsonObject();
+            String name = obj.has("name") ? obj.get("name").getAsString() : "unknown";
+            String type = obj.has("type") ? obj.get("type").getAsString() : "";
+
+            // GameManager는 특별 처리
+            if ("game_manager".equals(type)) {
+                continue;
+            }
+
+            // interactive_description 또는 monologue_texts 중 하나는 있어야 함
+            boolean hasInteractive = obj.has("interactive_description");
+            boolean hasMonologue = obj.has("monologue_messages");
+
+            if (!hasInteractive && !hasMonologue) {
+                throw new RuntimeException(String.format(
+                        "오브젝트 '%s'에 interactive_description 또는 monologue_texts가 없습니다", name));
+            }
+
+            // 둘 다 있으면 안됨
+            if (hasInteractive && hasMonologue) {
+                log.warn("오브젝트 '{}'에 interactive_description과 monologue_texts가 모두 있습니다. " +
+                        "interactive_description만 사용됩니다.", name);
+            }
+
+            if (hasMonologue) {
+                JsonElement messages = obj.get("monologue_messages");
+                if (!messages.isJsonArray()) {
+                    throw new RuntimeException(String.format(
+                            "오브젝트 '%s'의 monologue_messages가 배열이 아닙니다", name));
+                }
+                JsonArray msgArray = messages.getAsJsonArray();
+                if (msgArray.size() < 15) {
+                    log.warn("오브젝트 '{}'의 monologue_messages가 {}개로 15개 미만입니다",
+                            name, msgArray.size());
+                }
+            }
+
+            // existing_object는 id가 있어야 함
+            if ("existing_interactive_object".equals(type) && !obj.has("id")) {
+                throw new RuntimeException(String.format(
+                        "existing_interactive_object '%s'에 id가 없습니다", name));
+            }
+
+            // 새 오브젝트는 visual_description이 있어야 함
+            if ("interactive_object".equals(type) && !obj.has("visual_description")) {
+                throw new RuntimeException(String.format(
+                        "새 오브젝트 '%s'에 visual_description이 없습니다", name));
+            }
         }
     }
 
@@ -62,7 +148,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
                 continue;
             }
 
-            // 오브젝트 이름에서 기본 타입 추출 (예: CrystalCandle -> Candle)
+            // 오브젝트 이름에서 기본 타입 추출
             String baseName = extractBaseName(objectName);
 
             if (objectBaseNames.contains(baseName)) {
@@ -82,7 +168,8 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     private String extractBaseName(String objectName) {
         // 일반적인 수식어 제거
         String[] modifiers = {"Crystal", "Modern", "Ancient", "Victorian", "Golden", "Silver",
-                "Old", "New", "Large", "Small", "Big", "Tiny", "Dark", "Light", "Bright"};
+                "Old", "New", "Large", "Small", "Big", "Tiny", "Dark", "Light", "Bright",
+                "Ornate", "Antique", "Vintage", "Royal", "Imperial", "Mystic", "Magic"};
 
         String baseName = objectName;
         for (String modifier : modifiers) {

@@ -15,8 +15,7 @@ public class RoomCreationResponse {
     private String puid;
     private String theme;
     private String[] keywords;
-    private String difficulty; // 추가
-    private String roomPrefab;
+    private String difficulty;
     private JsonObject scenario;
     private String gameManagerScript;
     private List<String> objectScripts;

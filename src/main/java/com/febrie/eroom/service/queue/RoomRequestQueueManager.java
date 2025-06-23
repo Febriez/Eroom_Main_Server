@@ -56,7 +56,6 @@ public class RoomRequestQueueManager implements QueueManager {
         log.info("Theme: '{}'", request.getTheme());
         log.info("Keywords: {}", request.getKeywords() != null ? String.join(", ", request.getKeywords()) : "null");
         log.info("Difficulty: '{}'", request.getDifficulty());
-        log.info("Room Prefab: '{}'", request.getRoomPrefab());
         log.info("Queue Time: {}", queuedTime);
         log.info("Current Queue Size BEFORE: {}", requestQueue.size());
         log.info("========================");
