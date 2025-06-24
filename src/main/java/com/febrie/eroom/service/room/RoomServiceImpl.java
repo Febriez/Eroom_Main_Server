@@ -86,13 +86,14 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 방 생성 시작을 로깅합니다.
      */
-    private void logRoomCreationStart(String ruid, RoomCreationRequest request) {
+    private void logRoomCreationStart(String ruid, @NotNull RoomCreationRequest request) {
         log.info("통합 방 생성 시작: ruid={}, user_uuid={}, theme={}, difficulty={}, isFreeModeling={}", ruid, request.getUuid(), request.getTheme(), request.getValidatedDifficulty(), request.isFreeModeling());
     }
 
     /**
      * 방 생성 프로세스를 처리합니다.
      */
+    @NotNull
     private JsonObject processRoomCreation(RoomCreationRequest request, String ruid) {
         JsonObject scenario = createIntegratedScenario(request, ruid);
         List<CompletableFuture<ModelGenerationResult>> modelFutures = startModelGeneration(scenario, request.isFreeModeling());
@@ -123,7 +124,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * ExitDoor 존재를 검증합니다.
      */
-    private void validateExitDoorExists(RoomCreationRequest request) {
+    private void validateExitDoorExists(@NotNull RoomCreationRequest request) {
         boolean hasExitDoor = request.getExistingObjectsSafe().stream().anyMatch(obj -> "ExitDoor".equalsIgnoreCase(obj.getName()));
 
         if (!hasExitDoor) {
@@ -134,6 +135,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * LLM을 통해 시나리오를 생성합니다.
      */
+    @NotNull
     private JsonObject generateScenario(RoomCreationRequest request, String ruid) {
         String prompt = configManager.getPrompt("scenario");
         JsonObject scenarioRequest = buildScenarioRequest(request, ruid);
@@ -158,7 +160,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 시나리오 생성 완료를 로깅합니다.
      */
-    private void logScenarioCreation(String ruid, JsonObject scenario) {
+    private void logScenarioCreation(String ruid, @NotNull JsonObject scenario) {
         log.info("통합 시나리오 생성 완료. ruid: {}, 오브젝트 설명 {}개", ruid, scenario.getAsJsonArray("object_instructions").size());
     }
 
@@ -180,7 +182,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 시나리오 요청에 기본 정보를 추가합니다.
      */
-    private void addBasicInfo(JsonObject scenarioRequest, RoomCreationRequest request, String ruid) {
+    private void addBasicInfo(@NotNull JsonObject scenarioRequest, @NotNull RoomCreationRequest request, String ruid) {
         scenarioRequest.addProperty("uuid", request.getUuid());
         scenarioRequest.addProperty("ruid", ruid);
         scenarioRequest.addProperty("theme", request.getTheme().trim());
@@ -191,7 +193,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 시나리오 요청에 키워드와 기존 객체를 추가합니다.
      */
-    private void addKeywordsAndExistingObjects(JsonObject scenarioRequest, RoomCreationRequest request) {
+    private void addKeywordsAndExistingObjects(@NotNull JsonObject scenarioRequest, @NotNull RoomCreationRequest request) {
         scenarioRequest.add("keywords", createKeywordsArray(request.getKeywords()));
         JsonArray existingObjectsArray = convertExistingObjectsToJsonArray(request.getExistingObjectsSafe());
         scenarioRequest.add("existing_objects", existingObjectsArray);
@@ -200,14 +202,14 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 시나리오 요청에 메타데이터를 추가합니다.
      */
-    private void addMetadata(JsonObject scenarioRequest, RoomCreationRequest request) {
+    private void addMetadata(@NotNull JsonObject scenarioRequest, @NotNull RoomCreationRequest request) {
         scenarioRequest.addProperty("existing_objects_count", request.getExistingObjectsSafe().size());
     }
 
     /**
      * 시나리오 요청 생성을 로깅합니다.
      */
-    private void logScenarioRequestCreation(RoomCreationRequest request) {
+    private void logScenarioRequestCreation(@NotNull RoomCreationRequest request) {
         log.info("시나리오 요청 생성 완료 - keywords: {}, existing_objects: {}, is_free_modeling: {}", request.getKeywords().length, request.getExistingObjectsSafe().size(), request.isFreeModeling());
     }
 
@@ -259,7 +261,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 모델 생성 Future 리스트를 생성합니다.
      */
-    private List<CompletableFuture<ModelGenerationResult>> createModelGenerationFutures(JsonArray objectInstructions, boolean isFreeModeling) {
+    @NotNull
+    private List<CompletableFuture<ModelGenerationResult>> createModelGenerationFutures(@NotNull JsonArray objectInstructions, boolean isFreeModeling) {
         List<CompletableFuture<ModelGenerationResult>> futures = new ArrayList<>();
 
         for (int i = 0; i < objectInstructions.size(); i++) {
@@ -355,7 +358,9 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 모델을 생성합니다.
      */
-    private ModelGenerationResult generateModel(String prompt, String name, int index, boolean isFreeModeling) {
+    @NotNull
+    @Contract("_, _, _, _ -> new")
+    private ModelGenerationResult generateModel(@NotNull String prompt, String name, int index, boolean isFreeModeling) {
         log.debug("3D 모델 생성 요청 [{}]: name='{}', prompt='{}자', free={}", index, name, prompt.length(), isFreeModeling);
 
         MeshService modelService = isFreeModeling ? localModelService : meshService;
@@ -369,7 +374,9 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 모델 생성 오류를 처리합니다.
      */
-    private ModelGenerationResult handleModelGenerationError(String name, Exception e) {
+    @NotNull
+    @Contract("_, _ -> new")
+    private ModelGenerationResult handleModelGenerationError(String name, @NotNull Exception e) {
         log.error("모델 생성 실패: {} - {}", name, e.getMessage());
         return new ModelGenerationResult(name, "error-" + UUID.randomUUID().toString().substring(0, 8));
     }
@@ -420,7 +427,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 병렬로 스크립트를 생성합니다.
      */
-    private Map<String, String> createUnifiedScriptsParallel(JsonObject scenario) {
+    @NotNull
+    private Map<String, String> createUnifiedScriptsParallel(@NotNull JsonObject scenario) {
         Map<String, String> allScripts = new ConcurrentHashMap<>();
 
         List<JsonObject> gameManagerList = new ArrayList<>();
@@ -456,7 +464,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
      * 첫 번째 배치를 처리합니다.
      */
     @NotNull
-    private String processFirstBatch(JsonObject scenario, List<JsonObject> gameManagerList, List<JsonObject> otherObjects, Map<String, String> allScripts) {
+    private String processFirstBatch(JsonObject scenario, List<JsonObject> gameManagerList, List<JsonObject> otherObjects, @NotNull Map<String, String> allScripts) {
         List<JsonObject> firstBatch = buildFirstBatch(gameManagerList, otherObjects);
         logFirstBatch(gameManagerList, firstBatch);
 
@@ -469,7 +477,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 첫 번째 배치를 구성합니다.
      */
-    private List<JsonObject> buildFirstBatch(List<JsonObject> gameManagerList, List<JsonObject> otherObjects) {
+    @NotNull
+    private List<JsonObject> buildFirstBatch(List<JsonObject> gameManagerList, @NotNull List<JsonObject> otherObjects) {
         int firstBatchSize = Math.min(FIRST_BATCH_SIZE, otherObjects.size());
         List<JsonObject> firstBatch = new ArrayList<>(gameManagerList);
         firstBatch.addAll(otherObjects.subList(0, firstBatchSize));
@@ -479,7 +488,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 첫 번째 배치를 로깅합니다.
      */
-    private void logFirstBatch(List<JsonObject> gameManagerList, List<JsonObject> firstBatch) {
+    private void logFirstBatch(@NotNull List<JsonObject> gameManagerList, @NotNull List<JsonObject> firstBatch) {
         log.info("첫 번째 배치: GameManager {} 개 + 오브젝트 {} 개 = 총 {} 개", gameManagerList.size(), firstBatch.size() - gameManagerList.size(), firstBatch.size());
     }
 
@@ -495,7 +504,8 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * GameManager 스크립트를 추출하고 검증합니다.
      */
-    private String extractAndValidateGameManagerScript(Map<String, String> firstBatchResult) {
+    @NotNull
+    private String extractAndValidateGameManagerScript(@NotNull Map<String, String> firstBatchResult) {
         String gameManagerScript = firstBatchResult.get("GameManager");
         if (gameManagerScript == null || gameManagerScript.isEmpty()) {
             throw new RuntimeException("GameManager 스크립트 생성 실패");
@@ -523,14 +533,16 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 나머지 객체들을 가져옵니다.
      */
-    private List<JsonObject> getRemainingObjects(List<JsonObject> allObjects) {
+    @NotNull
+    private List<JsonObject> getRemainingObjects(@NotNull List<JsonObject> allObjects) {
         return allObjects.subList(Math.min(FIRST_BATCH_SIZE, allObjects.size()), allObjects.size());
     }
 
     /**
      * 배치 Future들을 생성합니다.
      */
-    private List<CompletableFuture<Map<String, String>>> createBatchFutures(JsonObject scenario, List<JsonObject> remainingObjects, String gameManagerScript) {
+    @NotNull
+    private List<CompletableFuture<Map<String, String>>> createBatchFutures(JsonObject scenario, @NotNull List<JsonObject> remainingObjects, String gameManagerScript) {
         List<CompletableFuture<Map<String, String>>> futures = new ArrayList<>();
 
         for (int i = 0; i < remainingObjects.size(); i += BATCH_SIZE) {
@@ -577,7 +589,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 배치 결과들을 수집합니다.
      */
-    private void collectBatchResults(List<CompletableFuture<Map<String, String>>> futures, Map<String, String> allScripts) throws Exception {
+    private void collectBatchResults(@NotNull List<CompletableFuture<Map<String, String>>> futures, Map<String, String> allScripts) throws Exception {
         for (CompletableFuture<Map<String, String>> future : futures) {
             allScripts.putAll(future.get());
         }
@@ -605,7 +617,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 배치의 객체 이름들을 로깅합니다.
      */
-    private void logBatchObjectNames(List<JsonObject> batch) {
+    private void logBatchObjectNames(@NotNull List<JsonObject> batch) {
         List<String> objectNames = new ArrayList<>();
         for (JsonObject obj : batch) {
             objectNames.add(obj.get("name").getAsString());
@@ -685,7 +697,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 배치 결과를 검증합니다.
      */
-    private void validateBatchResult(int batchStartIndex, Map<String, String> result, List<JsonObject> batch) {
+    private void validateBatchResult(int batchStartIndex, @NotNull Map<String, String> result, @NotNull List<JsonObject> batch) {
         if (result.size() < batch.size()) {
             log.warn("배치 {}: 생성된 스크립트 수({})가 오브젝트 수({})보다 적습니다. 누락된 오브젝트를 확인하세요.", batchStartIndex / BATCH_SIZE + 1, result.size(), batch.size());
 
@@ -696,7 +708,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 누락된 스크립트를 로깅합니다.
      */
-    private void logMissingScripts(Set<String> generatedNames, List<JsonObject> batch) {
+    private void logMissingScripts(Set<String> generatedNames, @NotNull List<JsonObject> batch) {
         for (JsonObject obj : batch) {
             String objName = obj.get("name").getAsString();
             if (!generatedNames.contains(objName) && !generatedNames.contains(objName + "C")) {
@@ -750,7 +762,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 모든 모델이 완료될 때까지 대기합니다.
      */
-    private void waitForAllModels(List<CompletableFuture<ModelGenerationResult>> futures) throws Exception {
+    private void waitForAllModels(@NotNull List<CompletableFuture<ModelGenerationResult>> futures) throws Exception {
         CompletableFuture<Void> allFutures = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
         allFutures.get(MODEL_TIMEOUT_MINUTES, TimeUnit.MINUTES);
     }
@@ -830,14 +842,14 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 오류 추적 ID인지 확인합니다.
      */
-    private boolean isErrorTrackingId(String trackingId) {
+    private boolean isErrorTrackingId(@NotNull String trackingId) {
         return trackingId.startsWith("error-") || trackingId.startsWith("timeout-");
     }
 
     /**
      * 실패한 모델을 추가합니다.
      */
-    private void addFailedModel(JsonObject failedModels, String objectName, String trackingId) {
+    private void addFailedModel(@NotNull JsonObject failedModels, String objectName, String trackingId) {
         failedModels.addProperty(objectName, trackingId);
         log.warn("모델 생성 실패로 표시됨: {} -> {}", objectName, trackingId);
     }
@@ -845,7 +857,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 성공한 모델을 추가합니다.
      */
-    private void addSuccessfulModel(JsonObject tracking, String objectName, String trackingId) {
+    private void addSuccessfulModel(@NotNull JsonObject tracking, String objectName, @NotNull String trackingId) {
         tracking.addProperty(objectName, trackingId.trim());
         log.debug("모델 추적 ID 추가: {} -> {}", objectName, trackingId);
     }
@@ -853,7 +865,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 추적 ID가 없는 모델을 추가합니다.
      */
-    private void addNoTrackingModel(JsonObject failedModels, String objectName) {
+    private void addNoTrackingModel(@NotNull JsonObject failedModels, String objectName) {
         String fallbackId = "no-tracking-" + System.currentTimeMillis();
         failedModels.addProperty(objectName, fallbackId);
         log.warn("trackingId가 없어 실패로 표시: {} -> {}", objectName, fallbackId);
@@ -862,7 +874,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 추적 정보를 최종화합니다.
      */
-    private JsonObject finalizeTracking(JsonObject tracking, JsonObject failedModels) {
+    private JsonObject finalizeTracking(JsonObject tracking, @NotNull JsonObject failedModels) {
         if (!failedModels.asMap().isEmpty()) {
             tracking.add("failed_models", failedModels);
         }
@@ -910,7 +922,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 응답에 콘텐츠를 추가합니다.
      */
-    private void addResponseContent(JsonObject response, RoomCreationRequest request, JsonObject scenario, Map<String, String> allScripts, JsonObject tracking) {
+    private void addResponseContent(@NotNull JsonObject response, @NotNull RoomCreationRequest request, JsonObject scenario, Map<String, String> allScripts, JsonObject tracking) {
         response.add("keywords", createKeywordsArray(request.getKeywords()));
         response.add("scenario", scenario);
         response.add("scripts", buildScriptsObject(allScripts));
@@ -920,7 +932,7 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
     /**
      * 최종 통계를 로깅합니다.
      */
-    private void logFinalStatistics(String ruid, JsonObject scenario, Map<String, String> allScripts) {
+    private void logFinalStatistics(String ruid, @NotNull JsonObject scenario, @NotNull Map<String, String> allScripts) {
         int totalObjects = scenario.getAsJsonArray("object_instructions").size();
         int generatedScripts = allScripts.size();
 
