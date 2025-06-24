@@ -1,6 +1,7 @@
 package com.febrie.eroom.service.mesh;
 
 import com.febrie.eroom.config.ApiKeyProvider;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import okhttp3.*;
@@ -22,13 +23,13 @@ public class MeshyApiService implements MeshService {
     private static final String MESHY_API_BASE_URL = "https://api.meshy.ai/openapi/v2/text-to-3d";
     private static final int TIMEOUT_SECONDS = 30;
 
-    // 폴링 관련 상수
-    private static final int MAX_POLLING_ATTEMPTS = 30;
-    private static final int POLLING_INTERVAL_MS = 10000;
+    // 폴링 관련 상수 - 5분간 2초마다 폴링
+    private static final int MAX_POLLING_ATTEMPTS = 150; // 5분 * 60초 / 2초 = 150회
+    private static final int POLLING_INTERVAL_MS = 2000; // 2초
 
     // 폴리곤 수 설정 상수
-    private static final int PREVIEW_POLYCOUNT = 4096;
-    private static final int REFINE_POLYCOUNT = 4096;
+    private static final int PREVIEW_POLYCOUNT = 32768;
+    private static final int REFINE_POLYCOUNT = 32768;
 
     // 응답 필드 상수
     private static final String FIELD_RESULT = "result";
@@ -78,11 +79,7 @@ public class MeshyApiService implements MeshService {
     @NotNull
     @Contract(" -> new")
     private OkHttpClient createHttpClient() {
-        return new OkHttpClient.Builder()
-                .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .build();
+        return new OkHttpClient.Builder().connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS).readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS).writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS).build();
     }
 
     /**
@@ -99,8 +96,7 @@ public class MeshyApiService implements MeshService {
             log.info("{}의 프리뷰가 ID: {}로 생성됨", objectName, previewId);
             return processPreview(previewId, objectName, apiKey);
         } catch (Exception e) {
-            return logAndReturnError(objectName, "프리뷰 생성 단계에서 오류 발생: " + e.getMessage(),
-                    "preview-exception");
+            return logAndReturnError(objectName, "프리뷰 생성 단계에서 오류 발생: " + e.getMessage(), "preview-exception");
         }
     }
 
@@ -119,10 +115,13 @@ public class MeshyApiService implements MeshService {
     @NotNull
     private String processPreview(String previewId, String objectName, String apiKey) {
         try {
-            if (isTaskFailed(previewId, apiKey, "프리뷰")) {
+            if (isTaskFailed(previewId, apiKey, "프리뷰", objectName)) {
                 log.error("{}의 프리뷰 생성 실패 또는 시간 초과", objectName);
                 return generateTimeoutId("preview", previewId);
             }
+
+            // 프리뷰 성공 로깅
+            log.info("{}의 프리뷰 생성 완료 (ID: {})", objectName, previewId);
 
             return refineModelAfterPreview(previewId, objectName, apiKey);
         } catch (Exception e) {
@@ -145,7 +144,7 @@ public class MeshyApiService implements MeshService {
 
             logRefineStart(objectName, refineId);
 
-            if (isTaskFailed(refineId, apiKey, "정제")) {
+            if (isTaskFailed(refineId, apiKey, "정제", objectName)) {
                 log.error("{}의 정제 작업 실패 또는 시간 초과", objectName);
                 return generateTimeoutId("refine", refineId);
             }
@@ -162,8 +161,7 @@ public class MeshyApiService implements MeshService {
      * 정제 시작을 로깅합니다.
      */
     private void logRefineStart(String objectName, String refineId) {
-        log.info("{}의 정제 작업이 ID: {}로 시작됨 (target_polycount: {}). 완료 대기 중...",
-                objectName, refineId, REFINE_POLYCOUNT);
+        log.info("{}의 정제 작업이 ID: {}로 시작됨 (target_polycount: {}). 완료 대기 중...", objectName, refineId, REFINE_POLYCOUNT);
     }
 
     /**
@@ -183,6 +181,7 @@ public class MeshyApiService implements MeshService {
             return generateErrorId("no-fbx", refineId);
         }
 
+        // 정제 완료 로깅
         log.info("{}의 모델 생성 완료. FBX URL: {}", objectName, fbxUrl);
         return fbxUrl;
     }
@@ -214,7 +213,7 @@ public class MeshyApiService implements MeshService {
         requestBody.addProperty("ai_model", "meshy-4");
         requestBody.addProperty("topology", "triangle");
         requestBody.addProperty("target_polycount", PREVIEW_POLYCOUNT);
-        requestBody.addProperty("should_remesh", false);
+        requestBody.addProperty("should_remesh", true);
         return requestBody;
     }
 
@@ -246,8 +245,7 @@ public class MeshyApiService implements MeshService {
         requestBody.addProperty("topology", "triangle");
         requestBody.addProperty("should_remesh", false);
 
-        log.info("Refine 요청 설정 - target_polycount: {}, enable_pbr: false, should_remesh: false",
-                REFINE_POLYCOUNT);
+        log.info("Refine 요청 설정 - target_polycount: {}, enable_pbr: false, should_remesh: false", REFINE_POLYCOUNT);
 
         return requestBody;
     }
@@ -273,12 +271,7 @@ public class MeshyApiService implements MeshService {
     @NotNull
     private Request buildApiRequest(@NotNull JsonObject requestBody, String apiKey) {
         RequestBody body = RequestBody.create(requestBody.toString(), JSON);
-        return new Request.Builder()
-                .url(MESHY_API_BASE_URL)
-                .addHeader("Content-Type", "application/json")
-                .addHeader("Authorization", "Bearer " + apiKey)
-                .post(body)
-                .build();
+        return new Request.Builder().url(MESHY_API_BASE_URL).addHeader("Content-Type", "application/json").addHeader("Authorization", "Bearer " + apiKey).post(body).build();
     }
 
     /**
@@ -287,7 +280,6 @@ public class MeshyApiService implements MeshService {
     @Nullable
     private JsonObject getTaskStatus(String taskId, String apiKey) {
         try {
-            log.info("작업 상태 확인: {}", taskId);
             String statusUrl = MESHY_API_BASE_URL + "/" + taskId;
             Request request = buildStatusRequest(statusUrl, apiKey);
             return executeRequest(request);
@@ -302,11 +294,7 @@ public class MeshyApiService implements MeshService {
      */
     @NotNull
     private Request buildStatusRequest(String url, String apiKey) {
-        return new Request.Builder()
-                .url(url)
-                .addHeader("Authorization", "Bearer " + apiKey)
-                .get()
-                .build();
+        return new Request.Builder().url(url).addHeader("Authorization", "Bearer " + apiKey).get().build();
     }
 
     /**
@@ -359,7 +347,7 @@ public class MeshyApiService implements MeshService {
      *
      * @return 작업이 실패했으면 true, 성공했으면 false
      */
-    private boolean isTaskFailed(String taskId, String apiKey, String taskType) {
+    private boolean isTaskFailed(String taskId, String apiKey, String taskType, String objectName) {
         try {
             for (int i = 0; i < MAX_POLLING_ATTEMPTS; i++) {
                 TaskStatus status = checkTaskStatus(taskId, apiKey);
@@ -368,25 +356,25 @@ public class MeshyApiService implements MeshService {
                     return true;
                 }
 
-                logTaskProgress(status);
-
+                // 상태별 처리
                 switch (status.status()) {
                     case STATUS_SUCCEEDED:
-                        return false;
+                        return false; // 성공시 바로 반환
                     case STATUS_FAILED:
                     case STATUS_CANCELED:
-                        logTaskError(status);
+                        logTaskError(status, objectName, taskType);
                         return true;
                 }
 
+                // 2초 대기
                 Thread.sleep(POLLING_INTERVAL_MS);
             }
 
-            log.error("{} 생성 시간 초과", taskType);
+            log.error("{} {} 생성 시간 초과 (5분)", objectName, taskType);
             return true;
 
         } catch (Exception e) {
-            log.error("상태 확인 중 오류 발생: {}", e.getMessage());
+            log.error("{}의 {} 상태 확인 중 오류 발생: {}", objectName, taskType, e.getMessage());
             return true;
         }
     }
@@ -398,7 +386,6 @@ public class MeshyApiService implements MeshService {
     private TaskStatus checkTaskStatus(String taskId, String apiKey) {
         JsonObject taskStatus = getTaskStatus(taskId, apiKey);
         if (taskStatus == null) {
-            log.error("작업 상태 조회 실패");
             return null;
         }
 
@@ -410,18 +397,13 @@ public class MeshyApiService implements MeshService {
     }
 
     /**
-     * 작업 진행 상태를 로깅합니다.
-     */
-    private void logTaskProgress(@NotNull TaskStatus status) {
-        log.info("작업 상태: {}, 진행률: {}%", status.status(), status.progress());
-    }
-
-    /**
      * 작업 오류를 로깅합니다.
      */
-    private void logTaskError(@NotNull TaskStatus status) {
+    private void logTaskError(@NotNull TaskStatus status, String objectName, String taskType) {
         if (status.errorMessage() != null) {
-            log.error("작업 실패: {}", status.errorMessage());
+            log.error("{}의 {} 작업 실패: {}", objectName, taskType, status.errorMessage());
+        } else {
+            log.error("{}의 {} 작업 실패 (상태: {})", objectName, taskType, status.status());
         }
     }
 
@@ -431,7 +413,9 @@ public class MeshyApiService implements MeshService {
     @Nullable
     private String extractTaskError(@NotNull JsonObject taskStatus) {
         if (taskStatus.has(FIELD_TASK_ERROR)) {
-            JsonObject taskError = taskStatus.getAsJsonObject(FIELD_TASK_ERROR);
+            JsonElement taskErrorTemp = taskStatus.get(FIELD_TASK_ERROR);
+            if (taskErrorTemp.isJsonNull()) return null;
+            JsonObject taskError = taskErrorTemp.getAsJsonObject();
             if (taskError.has(FIELD_MESSAGE)) {
                 return taskError.get(FIELD_MESSAGE).getAsString();
             }
@@ -459,8 +443,7 @@ public class MeshyApiService implements MeshService {
      * 작업이 성공했는지 확인합니다.
      */
     private boolean isTaskSucceeded(JsonObject taskStatus) {
-        return taskStatus != null &&
-                STATUS_SUCCEEDED.equals(taskStatus.get(FIELD_STATUS).getAsString());
+        return taskStatus != null && STATUS_SUCCEEDED.equals(taskStatus.get(FIELD_STATUS).getAsString());
     }
 
     /**

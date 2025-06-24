@@ -2,7 +2,6 @@ package com.febrie.eroom.config;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,7 +70,6 @@ public class JsonConfigurationManager implements ConfigurationManager {
     /**
      * 설정 파일 입력 스트림을 가져옵니다.
      */
-    @NotNull
     private InputStream getConfigInputStream() {
         InputStream inputStream = getClass().getClassLoader().getResourceAsStream(CONFIG_FILE);
         if (inputStream == null) {
@@ -103,7 +101,7 @@ public class JsonConfigurationManager implements ConfigurationManager {
      * 최상위 설정을 검증합니다.
      */
     private void validateTopLevelConfig() {
-        if (!hasRequiredKeys(config, KEY_PROMPTS, KEY_MODEL)) {
+        if (isMissingRequiredKeys(config, KEY_PROMPTS, KEY_MODEL)) {
             throw new RuntimeException(ERROR_MISSING_REQUIRED_CONFIG);
         }
     }
@@ -113,7 +111,7 @@ public class JsonConfigurationManager implements ConfigurationManager {
      */
     private void validatePromptConfig() {
         JsonObject prompts = config.getAsJsonObject(KEY_PROMPTS);
-        if (!hasRequiredKeys(prompts, KEY_SCENARIO, KEY_UNIFIED_SCRIPTS)) {
+        if (isMissingRequiredKeys(prompts, KEY_SCENARIO, KEY_UNIFIED_SCRIPTS)) {
             throw new RuntimeException(ERROR_MISSING_PROMPTS);
         }
     }
@@ -123,22 +121,22 @@ public class JsonConfigurationManager implements ConfigurationManager {
      */
     private void validateModelConfig() {
         JsonObject model = config.getAsJsonObject(KEY_MODEL);
-        if (!hasRequiredKeys(model, KEY_MAX_TOKENS, KEY_NAME,
+        if (isMissingRequiredKeys(model, KEY_MAX_TOKENS, KEY_NAME,
                 KEY_SCENARIO_TEMPERATURE, KEY_SCRIPT_TEMPERATURE)) {
             throw new RuntimeException(ERROR_MISSING_MODEL_CONFIG);
         }
     }
 
     /**
-     * 필수 키들이 존재하는지 확인합니다.
+     * 필수 키들이 누락되었는지 확인합니다.
      */
-    private boolean hasRequiredKeys(JsonObject obj, @NotNull String... keys) {
+    private boolean isMissingRequiredKeys(JsonObject obj, String... keys) {
         for (String key : keys) {
             if (!obj.has(key)) {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
     /**

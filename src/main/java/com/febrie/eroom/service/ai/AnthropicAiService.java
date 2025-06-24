@@ -16,6 +16,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -45,6 +51,10 @@ public class AnthropicAiService implements AiService {
     private static final String CLASS_NAME_SUFFIX = "C";
     private static final int LOG_TRUNCATE_LENGTH = 500;
 
+    // 파일 저장 관련 상수
+    private static final String LOG_DIR = "C:\\Users\\201-11\\Desktop\\Server\\logs\\llm_results";
+    private static final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+
     private final ApiKeyProvider apiKeyProvider;
     private final ConfigurationManager configManager;
     private volatile AnthropicClient client;
@@ -67,6 +77,10 @@ public class AnthropicAiService implements AiService {
         log.info("통합 시나리오 생성 시작: theme={}", theme);
 
         String response = executeAnthropicCall(scenarioPrompt, requestData, "scenarioTemperature");
+
+        // 파일로 저장
+        saveResponseToFile(response, "scenario", requestData);
+
         return parseJsonResponse(response);
     }
 
@@ -78,7 +92,49 @@ public class AnthropicAiService implements AiService {
         log.info("마크다운 기반 통합 스크립트 생성 시작");
 
         String response = executeAnthropicCall(unifiedScriptsPrompt, requestData, "scriptTemperature");
+
+        // 배치 처리인지 확인
+        boolean isBatch = requestData.has("batch_index");
+        String scriptType = isBatch ? "scripts_batch_" + requestData.get("batch_index").getAsInt() : "scripts";
+
+        // 파일로 저장
+        saveResponseToFile(response, scriptType, requestData);
+
         return parseAndEncodeScripts(response);
+    }
+
+    /**
+     * LLM 응답을 파일로 저장합니다.
+     */
+    private void saveResponseToFile(String content, String type, JsonObject requestData) {
+        try {
+            Path logDir = Paths.get(LOG_DIR);
+            if (!Files.exists(logDir)) {
+                Files.createDirectories(logDir);
+            }
+
+            String timestamp = LocalDateTime.now().format(TIMESTAMP_FORMAT);
+            String filename = String.format("%s_%s.txt", timestamp, type);
+            Path filePath = logDir.resolve(filename);
+
+            // 요청 정보와 응답을 함께 저장
+            StringBuilder fileContent = new StringBuilder();
+            fileContent.append("========== LLM Response Log ==========\n");
+            fileContent.append("Timestamp: ").append(LocalDateTime.now()).append("\n");
+            fileContent.append("Type: ").append(type).append("\n");
+            fileContent.append("Request RUID: ").append(requestData.has("ruid") ? requestData.get("ruid").getAsString() : "N/A").append("\n");
+            fileContent.append("Theme: ").append(requestData.has("theme") ? requestData.get("theme").getAsString() : "N/A").append("\n");
+            fileContent.append("\n========== Request Data ==========\n");
+            fileContent.append(requestData.toString()).append("\n");
+            fileContent.append("\n========== Response ==========\n");
+            fileContent.append(content).append("\n");
+            fileContent.append("\n========== End ==========\n");
+
+            Files.writeString(filePath, fileContent.toString(), StandardOpenOption.CREATE);
+            log.info("LLM 응답 저장됨: {}", filePath);
+        } catch (Exception e) {
+            log.error("LLM 응답 파일 저장 실패", e);
+        }
     }
 
     /**

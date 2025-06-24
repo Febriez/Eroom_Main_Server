@@ -31,7 +31,6 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     private static final String FIELD_ID = "id";
     private static final String FIELD_IS_FREE_MODELING = "is_free_modeling";
     private static final String FIELD_DIFFICULTY = "difficulty";
-    private static final String FIELD_MODEL_SCALES = "model_scales";
 
     // 상수값
     private static final String GAME_MANAGER = "GameManager";
@@ -50,9 +49,6 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     private static final int NORMAL_MAX = 7;
     private static final int HARD_MIN = 8;
     private static final int HARD_MAX = 9;
-
-    // 최소 monologue 메시지 개수
-    private static final int MIN_MONOLOGUE_MESSAGES = 15;
 
     // 오브젝트 이름 수식어
     private static final String[] OBJECT_MODIFIERS = {
@@ -79,7 +75,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
      * 시나리오의 기본 구조를 검증합니다.
      */
     private void validateStructure(JsonObject scenario) {
-        if (!hasRequiredFields(scenario, FIELD_SCENARIO_DATA, FIELD_OBJECT_INSTRUCTIONS)) {
+        if (isMissingRequiredFields(scenario, FIELD_SCENARIO_DATA, FIELD_OBJECT_INSTRUCTIONS)) {
             throw new RuntimeException("시나리오 구조가 올바르지 않습니다: scenario_data 또는 object_instructions 누락");
         }
     }
@@ -87,7 +83,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 시나리오 데이터를 검증합니다.
      */
-    private void validateScenarioData(JsonObject scenario) {
+    private void validateScenarioData(@NotNull JsonObject scenario) {
         JsonObject scenarioData = scenario.getAsJsonObject(FIELD_SCENARIO_DATA);
 
         validateScenarioDataFields(scenarioData);
@@ -99,7 +95,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
      * 시나리오 데이터의 필수 필드들을 검증합니다.
      */
     private void validateScenarioDataFields(JsonObject scenarioData) {
-        if (!hasRequiredFields(scenarioData, FIELD_THEME, FIELD_DESCRIPTION,
+        if (isMissingRequiredFields(scenarioData, FIELD_THEME, FIELD_DESCRIPTION,
                 FIELD_ESCAPE_CONDITION, FIELD_PUZZLE_FLOW)) {
             throw new RuntimeException("시나리오 데이터가 불완전합니다");
         }
@@ -108,7 +104,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * Exit mechanism을 검증합니다.
      */
-    private void validateExitMechanism(JsonObject scenarioData) {
+    private void validateExitMechanism(@NotNull JsonObject scenarioData) {
         if (!scenarioData.has(FIELD_EXIT_MECHANISM)) {
             throw new RuntimeException("exit_mechanism이 누락되었습니다");
         }
@@ -123,7 +119,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * Keyword count 존재를 검증합니다.
      */
-    private void validateKeywordCountExists(JsonObject scenarioData) {
+    private void validateKeywordCountExists(@NotNull JsonObject scenarioData) {
         if (!scenarioData.has(FIELD_KEYWORD_COUNT)) {
             throw new RuntimeException("keyword_count가 누락되었습니다");
         }
@@ -132,7 +128,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 오브젝트 지시사항들을 검증합니다.
      */
-    private void validateObjectInstructions(JsonObject scenario) {
+    private void validateObjectInstructions(@NotNull JsonObject scenario) {
         JsonArray objectInstructions = scenario.getAsJsonArray(FIELD_OBJECT_INSTRUCTIONS);
 
         if (objectInstructions.isEmpty()) {
@@ -146,7 +142,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * GameManager 존재를 검증합니다.
      */
-    private void validateGameManager(JsonArray objectInstructions) {
+    private void validateGameManager(@NotNull JsonArray objectInstructions) {
         JsonObject firstObject = objectInstructions.get(0).getAsJsonObject();
         if (!isGameManager(firstObject)) {
             throw new RuntimeException("첫 번째 오브젝트가 GameManager가 아닙니다");
@@ -156,7 +152,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * ExitDoor 존재를 검증합니다.
      */
-    private void validateExitDoor(JsonArray objectInstructions) {
+    private void validateExitDoor(@NotNull JsonArray objectInstructions) {
         boolean hasExitDoor = false;
 
         for (int i = 0; i < objectInstructions.size(); i++) {
@@ -176,7 +172,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * ExitDoor에 interactive_description이 있는지 검증합니다.
      */
-    private void validateExitDoorHasInteractiveDescription(JsonObject exitDoor) {
+    private void validateExitDoorHasInteractiveDescription(@NotNull JsonObject exitDoor) {
         if (!exitDoor.has(FIELD_INTERACTIVE_DESCRIPTION)) {
             throw new RuntimeException("ExitDoor에 interactive_description이 없습니다");
         }
@@ -185,7 +181,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 각 오브젝트의 필드들을 검증합니다.
      */
-    private void validateObjectFields(JsonObject scenario) {
+    private void validateObjectFields(@NotNull JsonObject scenario) {
         JsonArray objectInstructions = scenario.getAsJsonArray(FIELD_OBJECT_INSTRUCTIONS);
         boolean isFreeModeling = isFreeModeling(scenario);
 
@@ -214,7 +210,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 상호작용 필드들을 검증합니다.
      */
-    private void validateInteractionFields(JsonObject obj, String name) {
+    private void validateInteractionFields(@NotNull JsonObject obj, String name) {
         boolean hasInteractive = obj.has(FIELD_INTERACTIVE_DESCRIPTION);
         boolean hasMonologue = obj.has(FIELD_MONOLOGUE_MESSAGES);
 
@@ -236,16 +232,16 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * Monologue 메시지들을 검증합니다.
      */
-    private void validateMonologueMessages(JsonObject obj, String name) {
+    private void validateMonologueMessages(@NotNull JsonObject obj, String name) {
         if (!obj.get(FIELD_MONOLOGUE_MESSAGES).isJsonArray()) {
             throw new RuntimeException(String.format(
                     "오브젝트 '%s'의 monologue_messages가 배열이 아닙니다", name));
         }
 
         JsonArray msgArray = obj.getAsJsonArray(FIELD_MONOLOGUE_MESSAGES);
-        if (msgArray.size() < MIN_MONOLOGUE_MESSAGES) {
-            log.warn("오브젝트 '{}'의 monologue_messages가 {}개로 {}개 미만입니다",
-                    name, msgArray.size(), MIN_MONOLOGUE_MESSAGES);
+        if (msgArray.size() == 0) {
+            throw new RuntimeException(String.format(
+                    "오브젝트 '%s'의 monologue_messages가 비어있습니다", name));
         }
     }
 
@@ -296,7 +292,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 키워드 수 계산을 검증합니다.
      */
-    private void validateKeywordCountCalculation(JsonObject keywordCount) {
+    private void validateKeywordCountCalculation(@NotNull JsonObject keywordCount) {
         int userCount = keywordCount.get("user").getAsInt();
         int expandedCount = keywordCount.get("expanded").getAsInt();
         int total = keywordCount.get("total").getAsInt();
@@ -311,7 +307,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 난이도별 키워드 수를 검증합니다.
      */
-    private void validateKeywordCountForDifficulty(JsonObject keywordCount, String difficulty) {
+    private void validateKeywordCountForDifficulty(@NotNull JsonObject keywordCount, String difficulty) {
         int total = keywordCount.get("total").getAsInt();
         int userCount = keywordCount.get("user").getAsInt();
         int expandedCount = keywordCount.get("expanded").getAsInt();
@@ -331,7 +327,8 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 난이도별 키워드 수가 유효한지 확인합니다.
      */
-    private boolean isDifficultyKeywordCountValid(String difficulty, int total) {
+    @Contract(pure = true)
+    private boolean isDifficultyKeywordCountValid(@NotNull String difficulty, int total) {
         return switch (difficulty.toLowerCase()) {
             case "easy" -> total >= EASY_MIN && total <= EASY_MAX;
             case "normal" -> total >= NORMAL_MIN && total <= NORMAL_MAX;
@@ -343,7 +340,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 새 오브젝트 수를 검증합니다.
      */
-    private void validateNewObjectCount(JsonObject scenario, JsonObject keywordCount) {
+    private void validateNewObjectCount(@NotNull JsonObject scenario, @NotNull JsonObject keywordCount) {
         int newObjectCount = countNewObjects(scenario.getAsJsonArray(FIELD_OBJECT_INSTRUCTIONS));
         int total = keywordCount.get("total").getAsInt();
 
@@ -383,7 +380,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 다양성 검증을 위해 오브젝트들을 처리합니다.
      */
-    private void processObjectsForDiversity(JsonArray objectInstructions,
+    private void processObjectsForDiversity(@NotNull JsonArray objectInstructions,
                                             Set<String> objectBaseNames,
                                             Set<String> duplicateWarnings) {
         for (int i = 0; i < objectInstructions.size(); i++) {
@@ -406,7 +403,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 다양성 검증을 위해 건너뛰어야 하는지 확인합니다.
      */
-    private boolean shouldSkipForDiversity(JsonObject obj) {
+    private boolean shouldSkipForDiversity(@NotNull JsonObject obj) {
         if (!obj.has(FIELD_NAME)) {
             return true;
         }
@@ -418,7 +415,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 다양성 경고를 로깅합니다.
      */
-    private void logDiversityWarnings(Set<String> duplicateWarnings, int uniqueTypeCount) {
+    private void logDiversityWarnings(@NotNull Set<String> duplicateWarnings, int uniqueTypeCount) {
         if (!duplicateWarnings.isEmpty()) {
             log.warn("유사한 오브젝트 타입이 중복됨: {}. 더 다양한 오브젝트를 생성하는 것을 권장합니다.",
                     String.join(", ", duplicateWarnings));
@@ -462,15 +459,15 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     }
 
     /**
-     * 필수 필드들이 있는지 확인합니다.
+     * 필수 필드들이 누락되었는지 확인합니다.
      */
-    private boolean hasRequiredFields(JsonObject obj, @NotNull String... fields) {
+    private boolean isMissingRequiredFields(JsonObject obj, @NotNull String... fields) {
         for (String field : fields) {
             if (!obj.has(field)) {
-                return false;
+                return true;
             }
         }
-        return true;
+        return false;
     }
 
     /**

@@ -20,7 +20,7 @@ public class ApiHandler implements RequestHandler {
 
     // 응답 메시지 상수
     private static final String MSG_SERVER_ONLINE = "Eroom 서버가 작동 중입니다";
-    private static final String MSG_ROOM_CREATION_ACCEPTED = "방 생성 요청이 수락되었습니다. 상태 확인을 위해 /room/result?ruid=%s를 폴링하세요.";
+    private static final String MSG_ROOM_CREATION_ACCEPTED = "방 생성 요청이 수락되었습니다. 상태 확인을 위해 /room/result?ruid=%s 를 폴링하세요. room: %s";
 
     // 오류 메시지 상수
     private static final String ERROR_INVALID_REQUEST = "유효하지 않은 요청 본문 또는 'uuid' (userId)가 누락되었습니다.";
@@ -88,8 +88,8 @@ public class ApiHandler implements RequestHandler {
     @Override
     public void handleRoomCreate(@NotNull HttpServerExchange exchange) {
         exchange.getRequestReceiver().receiveFullString(
-                (httpServerExchange, message) -> processRoomCreationRequest(httpServerExchange, message),
-                (httpServerExchange, e) -> handleRequestReadError(httpServerExchange, e)
+                this::processRoomCreationRequest,
+                this::handleRequestReadError
         );
     }
 
@@ -195,7 +195,7 @@ public class ApiHandler implements RequestHandler {
         JsonObject response = new JsonObject();
         response.addProperty(FIELD_RUID, ruid);
         response.addProperty(FIELD_STATUS, "대기중");
-        response.addProperty(FIELD_MESSAGE, String.format(MSG_ROOM_CREATION_ACCEPTED, ruid));
+        response.addProperty(FIELD_MESSAGE, String.format(MSG_ROOM_CREATION_ACCEPTED, ruid, ruid));
         return response;
     }
 
