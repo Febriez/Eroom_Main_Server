@@ -46,8 +46,6 @@ public class AnthropicAiService implements AiService {
             Pattern.MULTILINE | Pattern.CASE_INSENSITIVE
     );
 
-    // 상수
-    private static final String GAME_MANAGER_NAME = "GameManager";
     private static final String CLASS_NAME_SUFFIX = "C";
     private static final int LOG_TRUNCATE_LENGTH = 500;
 
@@ -118,19 +116,18 @@ public class AnthropicAiService implements AiService {
             Path filePath = logDir.resolve(filename);
 
             // 요청 정보와 응답을 함께 저장
-            StringBuilder fileContent = new StringBuilder();
-            fileContent.append("========== LLM Response Log ==========\n");
-            fileContent.append("Timestamp: ").append(LocalDateTime.now()).append("\n");
-            fileContent.append("Type: ").append(type).append("\n");
-            fileContent.append("Request RUID: ").append(requestData.has("ruid") ? requestData.get("ruid").getAsString() : "N/A").append("\n");
-            fileContent.append("Theme: ").append(requestData.has("theme") ? requestData.get("theme").getAsString() : "N/A").append("\n");
-            fileContent.append("\n========== Request Data ==========\n");
-            fileContent.append(requestData.toString()).append("\n");
-            fileContent.append("\n========== Response ==========\n");
-            fileContent.append(content).append("\n");
-            fileContent.append("\n========== End ==========\n");
+            String fileContent = "========== LLM Response Log ==========\n" +
+                    "Timestamp: " + LocalDateTime.now() + "\n" +
+                    "Type: " + type + "\n" +
+                    "Request RUID: " + (requestData.has("ruid") ? requestData.get("ruid").getAsString() : "N/A") + "\n" +
+                    "Theme: " + (requestData.has("theme") ? requestData.get("theme").getAsString() : "N/A") + "\n" +
+                    "\n========== Request Data ==========\n" +
+                    requestData + "\n" +
+                    "\n========== Response ==========\n" +
+                    content + "\n" +
+                    "\n========== End ==========\n";
 
-            Files.writeString(filePath, fileContent.toString(), StandardOpenOption.CREATE);
+            Files.writeString(filePath, fileContent, StandardOpenOption.CREATE);
             log.info("LLM 응답 저장됨: {}", filePath);
         } catch (Exception e) {
             log.error("LLM 응답 파일 저장 실패", e);
@@ -436,15 +433,6 @@ public class AnthropicAiService implements AiService {
         if (textContent == null || textContent.isEmpty()) {
             String contentType = temperatureKey.replace("Temperature", "");
             terminateWithError(contentType + " 생성 응답이 비어있습니다.");
-        }
-    }
-
-    /**
-     * GameManager 존재를 검증합니다.
-     */
-    private void validateGameManagerExists(@NotNull Map<String, String> scripts) {
-        if (!scripts.containsKey(GAME_MANAGER_NAME)) {
-            log.warn("GameManager 스크립트가 파싱되지 않았습니다");
         }
     }
 

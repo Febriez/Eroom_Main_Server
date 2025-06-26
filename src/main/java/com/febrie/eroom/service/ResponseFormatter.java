@@ -49,7 +49,7 @@ public class ResponseFormatter {
     /**
      * 빈 응답을 전송합니다.
      */
-    private void sendEmptyResponse(HttpServerExchange exchange, int statusCode) {
+    private void sendEmptyResponse(@NotNull HttpServerExchange exchange, int statusCode) {
         exchange.setStatusCode(statusCode);
         exchange.endExchange();
     }
@@ -57,7 +57,7 @@ public class ResponseFormatter {
     /**
      * JSON 응답 헤더를 준비합니다.
      */
-    private void prepareJsonResponse(HttpServerExchange exchange, int statusCode) {
+    private void prepareJsonResponse(@NotNull HttpServerExchange exchange, int statusCode) {
         exchange.setStatusCode(statusCode);
         exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, CONTENT_TYPE_JSON);
     }
@@ -65,7 +65,7 @@ public class ResponseFormatter {
     /**
      * 응답 본문을 전송합니다.
      */
-    private void sendResponseBody(HttpServerExchange exchange, JsonObject body) {
+    private void sendResponseBody(@NotNull HttpServerExchange exchange, JsonObject body) {
         exchange.getResponseSender().send(gson.toJson(body));
     }
 
@@ -88,7 +88,7 @@ public class ResponseFormatter {
     /**
      * 성공 플래그를 확인하고 추가합니다.
      */
-    private void ensureSuccessFlag(JsonObject data) {
+    private void ensureSuccessFlag(@NotNull JsonObject data) {
         if (!data.has(SUCCESS_KEY)) {
             data.addProperty(SUCCESS_KEY, true);
         }
@@ -105,7 +105,7 @@ public class ResponseFormatter {
     /**
      * 성공 메시지 객체를 생성합니다.
      */
-    private JsonObject createSuccessMessage(String message) {
+    private @NotNull JsonObject createSuccessMessage(String message) {
         JsonObject response = new JsonObject();
         response.addProperty(SUCCESS_KEY, true);
         response.addProperty(MESSAGE_KEY, message);
@@ -123,7 +123,7 @@ public class ResponseFormatter {
     /**
      * 에러 응답 객체를 생성합니다.
      */
-    private JsonObject createErrorResponse(String errorMessage) {
+    private @NotNull JsonObject createErrorResponse(String errorMessage) {
         JsonObject errorResponse = new JsonObject();
         errorResponse.addProperty(SUCCESS_KEY, false);
         errorResponse.addProperty(ERROR_KEY, errorMessage);

@@ -125,7 +125,7 @@ public class LocalModelService implements MeshService {
     private String processResponse(@NotNull Response response, String objectName, String serverUrl) throws Exception {
         try (response) {
             if (!response.isSuccessful()) {
-                return handleUnsuccessfulResponse(response, objectName, serverUrl);
+                return handleUnsuccessfulResponse(response, serverUrl);
             }
 
             return extractModelIdFromResponse(response, objectName);
@@ -136,7 +136,7 @@ public class LocalModelService implements MeshService {
      * 실패한 응답을 처리합니다.
      */
     @NotNull
-    private String handleUnsuccessfulResponse(@NotNull Response response, String objectName, String serverUrl) {
+    private String handleUnsuccessfulResponse(@NotNull Response response, String serverUrl) {
         log.error("로컬 서버 응답 실패. 상태 코드: {}, 서버: {}",
                 response.code(), serverUrl);
         return generateErrorId(ERROR_TYPE_LOCAL);

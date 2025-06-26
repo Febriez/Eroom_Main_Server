@@ -13,6 +13,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -95,6 +96,7 @@ public class ServiceFactoryImpl implements ServiceFactory {
     /**
      * 설정 파일에서 서버 URL 목록을 읽습니다.
      */
+    @NotNull
     private List<String> loadServerUrlsFromConfig() {
         List<String> serverUrls = new ArrayList<>();
         JsonObject config = configManager.getConfig();
@@ -119,6 +121,7 @@ public class ServiceFactoryImpl implements ServiceFactory {
     /**
      * 기본 서버 URL 목록을 사용합니다.
      */
+    @Unmodifiable
     @NotNull
     @Contract(pure = true)
     private List<String> useDefaultServerUrls() {

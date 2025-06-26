@@ -6,6 +6,8 @@ import com.febrie.eroom.service.room.RoomService;
 
 public interface ServiceFactory {
     AiService createAiService();
+
     MeshService createMeshService();
+
     RoomService createRoomService();
 }

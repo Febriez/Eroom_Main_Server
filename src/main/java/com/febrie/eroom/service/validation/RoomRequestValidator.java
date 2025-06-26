@@ -58,18 +58,16 @@ public class RoomRequestValidator implements RequestValidator {
      * 키워드 배열이 비어있지 않은지 검증합니다.
      */
     private void validateKeywordsNotEmpty(@NotNull RoomCreationRequest request) {
-        if (request.getKeywords() == null || request.getKeywords().length == 0) {
+        if (request.getKeywords() == null || request.getKeywords().length == 0)
             throw new IllegalArgumentException(ERROR_EMPTY_KEYWORDS);
-        }
     }
 
     /**
      * 각 키워드가 유효한지 검증합니다.
      */
-    private void validateEachKeyword(@NotNull String[] keywords) {
-        for (String keyword : keywords) {
+    private void validateEachKeyword(String @NotNull [] keywords) {
+        for (String keyword : keywords)
             validateNotEmpty(keyword, ERROR_EMPTY_KEYWORD_ITEM);
-        }
     }
 
     /**
@@ -79,9 +77,8 @@ public class RoomRequestValidator implements RequestValidator {
     private void validateDifficulty(@NotNull RoomCreationRequest request) {
         if (request.getDifficulty() != null) {
             String normalizedDifficulty = request.getDifficulty().trim().toLowerCase();
-            if (!VALID_DIFFICULTIES.contains(normalizedDifficulty)) {
+            if (!VALID_DIFFICULTIES.contains(normalizedDifficulty))
                 throw new IllegalArgumentException(ERROR_INVALID_DIFFICULTY);
-            }
         }
     }
 
@@ -90,8 +87,7 @@ public class RoomRequestValidator implements RequestValidator {
      * null이거나 공백만 있는 경우 예외를 발생시킵니다.
      */
     private void validateNotEmpty(String value, String errorMessage) {
-        if (value == null || value.trim().isEmpty()) {
+        if (value == null || value.trim().isEmpty())
             throw new IllegalArgumentException(errorMessage);
-        }
     }
 }

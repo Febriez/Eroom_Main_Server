@@ -51,12 +51,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     private static final int HARD_MAX = 9;
 
     // 오브젝트 이름 수식어
-    private static final String[] OBJECT_MODIFIERS = {
-            "Crystal", "Modern", "Ancient", "Victorian", "Golden", "Silver",
-            "Old", "New", "Large", "Small", "Big", "Tiny", "Dark", "Light",
-            "Bright", "Ornate", "Antique", "Vintage", "Royal", "Imperial",
-            "Mystic", "Magic"
-    };
+    private static final String[] OBJECT_MODIFIERS = {"Crystal", "Modern", "Ancient", "Victorian", "Golden", "Silver", "Old", "New", "Large", "Small", "Big", "Tiny", "Dark", "Light", "Bright", "Ornate", "Antique", "Vintage", "Royal", "Imperial", "Mystic", "Magic"};
 
     /**
      * 시나리오를 검증합니다.
@@ -95,8 +90,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
      * 시나리오 데이터의 필수 필드들을 검증합니다.
      */
     private void validateScenarioDataFields(JsonObject scenarioData) {
-        if (isMissingRequiredFields(scenarioData, FIELD_THEME, FIELD_DESCRIPTION,
-                FIELD_ESCAPE_CONDITION, FIELD_PUZZLE_FLOW)) {
+        if (isMissingRequiredFields(scenarioData, FIELD_THEME, FIELD_DESCRIPTION, FIELD_ESCAPE_CONDITION, FIELD_PUZZLE_FLOW)) {
             throw new RuntimeException("시나리오 데이터가 불완전합니다");
         }
     }
@@ -111,8 +105,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
 
         String exitMechanism = scenarioData.get(FIELD_EXIT_MECHANISM).getAsString();
         if (!VALID_EXIT_MECHANISMS.contains(exitMechanism)) {
-            throw new RuntimeException("잘못된 exit_mechanism: " + exitMechanism +
-                    ". 허용값: " + String.join(", ", VALID_EXIT_MECHANISMS));
+            throw new RuntimeException("잘못된 exit_mechanism: " + exitMechanism + ". 허용값: " + String.join(", ", VALID_EXIT_MECHANISMS));
         }
     }
 
@@ -215,13 +208,11 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         boolean hasMonologue = obj.has(FIELD_MONOLOGUE_MESSAGES);
 
         if (!hasInteractive && !hasMonologue) {
-            throw new RuntimeException(String.format(
-                    "오브젝트 '%s'에 interactive_description 또는 monologue_messages가 없습니다", name));
+            throw new RuntimeException(String.format("오브젝트 '%s'에 interactive_description 또는 monologue_messages가 없습니다", name));
         }
 
         if (hasInteractive && hasMonologue) {
-            log.warn("오브젝트 '{}'에 interactive_description과 monologue_messages가 모두 있습니다. " +
-                    "interactive_description만 사용됩니다.", name);
+            log.warn("오브젝트 '{}'에 interactive_description과 monologue_messages가 모두 있습니다. " + "interactive_description만 사용됩니다.", name);
         }
 
         if (hasMonologue) {
@@ -234,14 +225,12 @@ public class DefaultScenarioValidator implements ScenarioValidator {
      */
     private void validateMonologueMessages(@NotNull JsonObject obj, String name) {
         if (!obj.get(FIELD_MONOLOGUE_MESSAGES).isJsonArray()) {
-            throw new RuntimeException(String.format(
-                    "오브젝트 '%s'의 monologue_messages가 배열이 아닙니다", name));
+            throw new RuntimeException(String.format("오브젝트 '%s'의 monologue_messages가 배열이 아닙니다", name));
         }
 
         JsonArray msgArray = obj.getAsJsonArray(FIELD_MONOLOGUE_MESSAGES);
-        if (msgArray.size() == 0) {
-            throw new RuntimeException(String.format(
-                    "오브젝트 '%s'의 monologue_messages가 비어있습니다", name));
+        if (msgArray.isEmpty()) {
+            throw new RuntimeException(String.format("오브젝트 '%s'의 monologue_messages가 비어있습니다", name));
         }
     }
 
@@ -250,8 +239,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
      */
     private void validateExistingObjectId(JsonObject obj, String type, String name) {
         if (TYPE_EXISTING_INTERACTIVE.equals(type) && !obj.has(FIELD_ID)) {
-            throw new RuntimeException(String.format(
-                    "existing_interactive_object '%s'에 id가 없습니다", name));
+            throw new RuntimeException(String.format("existing_interactive_object '%s'에 id가 없습니다", name));
         }
     }
 
@@ -265,13 +253,11 @@ public class DefaultScenarioValidator implements ScenarioValidator {
 
         if (isFreeModeling) {
             if (!obj.has(FIELD_SIMPLE_VISUAL_DESCRIPTION)) {
-                throw new RuntimeException(String.format(
-                        "무료 모델링 모드에서 새 오브젝트 '%s'에 simple_visual_description이 없습니다", name));
+                throw new RuntimeException(String.format("무료 모델링 모드에서 새 오브젝트 '%s'에 simple_visual_description이 없습니다", name));
             }
         } else {
             if (!obj.has(FIELD_VISUAL_DESCRIPTION)) {
-                throw new RuntimeException(String.format(
-                        "유료 모델링 모드에서 새 오브젝트 '%s'에 visual_description이 없습니다", name));
+                throw new RuntimeException(String.format("유료 모델링 모드에서 새 오브젝트 '%s'에 visual_description이 없습니다", name));
             }
         }
     }
@@ -298,9 +284,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         int total = keywordCount.get("total").getAsInt();
 
         if (userCount + expandedCount != total) {
-            throw new RuntimeException(String.format(
-                    "키워드 수 계산 오류: user(%d) + expanded(%d) != total(%d)",
-                    userCount, expandedCount, total));
+            throw new RuntimeException(String.format("키워드 수 계산 오류: user(%d) + expanded(%d) != total(%d)", userCount, expandedCount, total));
         }
     }
 
@@ -315,13 +299,10 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         boolean valid = isDifficultyKeywordCountValid(difficulty, total);
 
         if (!valid) {
-            throw new RuntimeException(String.format(
-                    "%s 난이도에서 키워드 수가 잘못되었습니다. 생성된: %d개 (user: %d, expanded: %d)",
-                    difficulty, total, userCount, expandedCount));
+            throw new RuntimeException(String.format("%s 난이도에서 키워드 수가 잘못되었습니다. 생성된: %d개 (user: %d, expanded: %d)", difficulty, total, userCount, expandedCount));
         }
 
-        log.info("키워드 검증 완료: {} 난이도, 총 {}개 (user: {}, expanded: {})",
-                difficulty, total, userCount, expandedCount);
+        log.info("키워드 검증 완료: {} 난이도, 총 {}개 (user: {}, expanded: {})", difficulty, total, userCount, expandedCount);
     }
 
     /**
@@ -345,9 +326,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
         int total = keywordCount.get("total").getAsInt();
 
         if (newObjectCount != total) {
-            throw new RuntimeException(String.format(
-                    "새 오브젝트 수(%d)가 총 키워드 수(%d)와 일치하지 않습니다",
-                    newObjectCount, total));
+            throw new RuntimeException(String.format("새 오브젝트 수(%d)가 총 키워드 수(%d)와 일치하지 않습니다", newObjectCount, total));
         }
     }
 
@@ -380,9 +359,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 다양성 검증을 위해 오브젝트들을 처리합니다.
      */
-    private void processObjectsForDiversity(@NotNull JsonArray objectInstructions,
-                                            Set<String> objectBaseNames,
-                                            Set<String> duplicateWarnings) {
+    private void processObjectsForDiversity(@NotNull JsonArray objectInstructions, Set<String> objectBaseNames, Set<String> duplicateWarnings) {
         for (int i = 0; i < objectInstructions.size(); i++) {
             JsonObject obj = objectInstructions.get(i).getAsJsonObject();
 
@@ -417,8 +394,7 @@ public class DefaultScenarioValidator implements ScenarioValidator {
      */
     private void logDiversityWarnings(@NotNull Set<String> duplicateWarnings, int uniqueTypeCount) {
         if (!duplicateWarnings.isEmpty()) {
-            log.warn("유사한 오브젝트 타입이 중복됨: {}. 더 다양한 오브젝트를 생성하는 것을 권장합니다.",
-                    String.join(", ", duplicateWarnings));
+            log.warn("유사한 오브젝트 타입이 중복됨: {}. 더 다양한 오브젝트를 생성하는 것을 권장합니다.", String.join(", ", duplicateWarnings));
         }
 
         log.info("새로 생성된 오브젝트 타입: {} 종류", uniqueTypeCount);
@@ -461,12 +437,9 @@ public class DefaultScenarioValidator implements ScenarioValidator {
     /**
      * 필수 필드들이 누락되었는지 확인합니다.
      */
-    private boolean isMissingRequiredFields(JsonObject obj, @NotNull String... fields) {
-        for (String field : fields) {
-            if (!obj.has(field)) {
-                return true;
-            }
-        }
+    private boolean isMissingRequiredFields(JsonObject obj, @NotNull String @NotNull ... fields) {
+        for (String field : fields)
+            if (!obj.has(field)) return true;
         return false;
     }
 

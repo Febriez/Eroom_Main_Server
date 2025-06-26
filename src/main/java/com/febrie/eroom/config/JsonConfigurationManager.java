@@ -2,6 +2,7 @@ package com.febrie.eroom.config;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,6 +71,7 @@ public class JsonConfigurationManager implements ConfigurationManager {
     /**
      * 설정 파일 입력 스트림을 가져옵니다.
      */
+    @NotNull
     private InputStream getConfigInputStream() {
         InputStream inputStream = getClass().getClassLoader().getResourceAsStream(CONFIG_FILE);
         if (inputStream == null) {
@@ -130,7 +132,7 @@ public class JsonConfigurationManager implements ConfigurationManager {
     /**
      * 필수 키들이 누락되었는지 확인합니다.
      */
-    private boolean isMissingRequiredKeys(JsonObject obj, String... keys) {
+    private boolean isMissingRequiredKeys(JsonObject obj, @NotNull String... keys) {
         for (String key : keys) {
             if (!obj.has(key)) {
                 return true;

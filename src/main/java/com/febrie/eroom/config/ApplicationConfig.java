@@ -23,8 +23,8 @@ public class ApplicationConfig {
 
     /**
      * -- GETTER --
-     *  설정된 포트 번호를 반환합니다.
-     *  주로 테스트 목적으로 사용됩니다.
+     * 설정된 포트 번호를 반환합니다.
+     * 주로 테스트 목적으로 사용됩니다.
      */
     private final int port;
 

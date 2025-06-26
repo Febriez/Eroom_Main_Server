@@ -966,10 +966,10 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
      * 키워드를 배열로 변환합니다.
      */
     @NotNull
-    private String[] convertKeywordsToArray(@NotNull String[] keywords) {
+    private String @NotNull [] convertKeywordsToArray(String @NotNull [] keywords) {
         Set<String> uniqueKeywords = new LinkedHashSet<>();
         for (String keyword : keywords) {
-            if (keyword != null && !keyword.trim().isEmpty()) {
+            if (!keyword.trim().isEmpty()) {
                 uniqueKeywords.add(keyword.trim().toLowerCase());
             }
         }
@@ -1001,12 +1001,12 @@ public class RoomServiceImpl implements RoomService, AutoCloseable {
      * 키워드 배열을 생성합니다.
      */
     @NotNull
-    private JsonArray createKeywordsArray(@NotNull String[] keywords) {
+    private JsonArray createKeywordsArray(@NotNull String @NotNull [] keywords) {
         JsonArray array = new JsonArray();
         Set<String> uniqueKeywords = new LinkedHashSet<>();
 
         for (String keyword : keywords) {
-            if (keyword != null && !keyword.trim().isEmpty()) {
+            if (!keyword.trim().isEmpty()) {
                 uniqueKeywords.add(keyword.trim().toLowerCase());
             }
         }
