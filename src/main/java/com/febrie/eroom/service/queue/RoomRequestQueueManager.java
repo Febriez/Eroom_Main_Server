@@ -1,8 +1,10 @@
 package com.febrie.eroom.service.queue;
 
 import com.febrie.eroom.model.RoomCreationRequest;
+import com.febrie.eroom.model.RoomCreationResponse;
 import com.febrie.eroom.service.JobResultStore;
 import com.febrie.eroom.service.room.RoomService;
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
@@ -23,6 +25,7 @@ public class RoomRequestQueueManager implements QueueManager {
     private final RoomService roomService;
     private final JobResultStore resultStore;
     private final int maxConcurrentRequests;
+    private final Gson gson;
 
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final AtomicInteger completedRequests = new AtomicInteger(0);
@@ -37,9 +40,10 @@ public class RoomRequestQueueManager implements QueueManager {
         this.maxConcurrentRequests = maxConcurrentRequests;
         this.executorService = Executors.newFixedThreadPool(maxConcurrentRequests);
         this.requestQueue = new LinkedBlockingQueue<>();
+        this.gson = new Gson();
 
         initializeWorkers(maxConcurrentRequests);
-        log.info("RoomRequestQueueManager 초기화 완료. 최대 동시 처리 수: {}", maxConcurrentRequests);
+        log.info("RoomRequestQueueManager 초기화 - maxConcurrent: {}", maxConcurrentRequests);
     }
 
     /**
@@ -58,9 +62,7 @@ public class RoomRequestQueueManager implements QueueManager {
     public String submitRequest(@NotNull RoomCreationRequest request) {
         String ruid = generateRuid();
         long queuedTime = System.currentTimeMillis();
-
-        logRequestDetails(ruid, request, queuedTime);
-
+        logRequestDetails(ruid, request);
         try {
             return enqueueRequest(ruid, request, queuedTime);
         } catch (InterruptedException e) {
@@ -85,16 +87,11 @@ public class RoomRequestQueueManager implements QueueManager {
     /**
      * 요청 상세 정보를 로깅합니다.
      */
-    private void logRequestDetails(String ruid, @NotNull RoomCreationRequest request, long queuedTime) {
-        log.info("=== 요청 제출 상세 정보 ===");
-        log.info("RUID: {}", ruid);
-        log.info("User UUID: {}", request.getUuid());
-        log.info("Theme: '{}'", request.getTheme());
-        log.info("Keywords: {}", formatKeywords(request.getKeywords()));
-        log.info("Difficulty: '{}'", request.getDifficulty());
-        log.info("Queue Time: {}", queuedTime);
-        log.info("Current Queue Size BEFORE: {}", requestQueue.size());
-        log.info("========================");
+    private void logRequestDetails(String ruid, @NotNull RoomCreationRequest request) {
+        log.debug("요청 제출 - ruid: {}, uuid: {}, theme: {}, keywords: [{}], difficulty: {}, queueSize: {}",
+                ruid, request.getUuid(), request.getTheme(),
+                formatKeywords(request.getKeywords()), request.getDifficulty(),
+                requestQueue.size());
     }
 
     /**
@@ -109,9 +106,8 @@ public class RoomRequestQueueManager implements QueueManager {
      * 큐 상태를 로깅합니다.
      */
     private void logQueueStatus(String ruid, String userUuid) {
-        log.info("방 생성 요청 큐에 추가됨. ruid: {}, user_uuid: {}, 현재 큐 크기: {}",
-                ruid, userUuid, requestQueue.size());
-        log.info("큐 추가 후 상태 - Active: {}, Completed: {}", activeRequests.get(), completedRequests.get());
+        log.info("요청 큐 추가됨 - ruid: {}, uuid: {}, queueSize: {}, active: {}, completed: {}",
+                ruid, userUuid, requestQueue.size(), activeRequests.get(), completedRequests.get());
     }
 
     /**
@@ -132,9 +128,9 @@ public class RoomRequestQueueManager implements QueueManager {
      */
     @Override
     public void shutdown() {
-        log.info("RoomRequestQueueManager 종료 시작...");
+        log.debug("RoomRequestQueueManager 종료 시작");
         shutdownExecutorService();
-        log.info("RoomRequestQueueManager 종료 완료.");
+        log.debug("RoomRequestQueueManager 종료 완료");
     }
 
     /**
@@ -180,7 +176,7 @@ public class RoomRequestQueueManager implements QueueManager {
      * 큐 프로세서 워커의 메인 루프입니다.
      */
     private void runProcessorLoop() {
-        log.info("큐 프로세서 워커 시작: {}", Thread.currentThread().getName());
+        log.debug("큐 프로세서 워커 시작: {}", Thread.currentThread().getName());
 
         while (!Thread.currentThread().isInterrupted()) {
             try {
@@ -210,7 +206,7 @@ public class RoomRequestQueueManager implements QueueManager {
      */
     private void logRequestExtraction(@NotNull QueuedRoomRequest queuedRequest) {
         long waitTime = System.currentTimeMillis() - queuedRequest.queuedTimestamp();
-        log.info("큐에서 요청 추출됨. ruid: {}, 큐 대기 시간: {}ms",
+        log.debug("큐에서 요청 추출 - ruid: {}, waitTime: {}ms",
                 queuedRequest.ruid(), waitTime);
     }
 
@@ -233,8 +229,8 @@ public class RoomRequestQueueManager implements QueueManager {
         updateJobStatusToProcessing(ruid);
 
         try {
-            JsonObject result = executeRoomCreation(ruid, request);
-            handleProcessingSuccess(ruid, result);
+            RoomCreationResponse response = executeRoomCreation(ruid, request);
+            handleProcessingSuccess(ruid, response);
         } catch (Exception e) {
             handleProcessingError(ruid, request.getUuid(), e);
         } finally {
@@ -246,15 +242,9 @@ public class RoomRequestQueueManager implements QueueManager {
      * 처리 시작을 로깅합니다.
      */
     private void logProcessingStart(String ruid, @NotNull RoomCreationRequest request) {
-        long processingStartTime = System.currentTimeMillis();
         int currentActive = activeRequests.incrementAndGet();
-
-        log.info("=== 백그라운드 처리 시작 ===");
-        log.info("RUID: {}", ruid);
-        log.info("User UUID: {}", request.getUuid());
-        log.info("현재 활성 요청: {}", currentActive);
-        log.info("처리 시작 시간: {}", processingStartTime);
-        log.info("===========================");
+        log.info("처리 시작 - ruid: {}, uuid: {}, active: {}",
+                ruid, request.getUuid(), currentActive);
     }
 
     /**
@@ -267,51 +257,171 @@ public class RoomRequestQueueManager implements QueueManager {
     /**
      * 방 생성을 실행합니다.
      */
-    private JsonObject executeRoomCreation(String ruid, RoomCreationRequest request) {
-        log.info("RoomService.createRoom() 호출 시작. ruid: {}", ruid);
+    private RoomCreationResponse executeRoomCreation(String ruid, RoomCreationRequest request) {
+        log.debug("RoomService.createRoom() 호출 - ruid: {}", ruid);
         long startTime = System.currentTimeMillis();
 
-        JsonObject result = roomService.createRoom(request, ruid);
+        RoomCreationResponse response = roomService.createRoom(request, ruid);
 
-        logRoomCreationResult(ruid, result, startTime);
-        return result;
+        logRoomCreationResult(ruid, response, startTime);
+        return response;
     }
 
     /**
      * 방 생성 결과를 로깅합니다.
      */
-    private void logRoomCreationResult(String ruid, JsonObject result, long startTime) {
+    private void logRoomCreationResult(String ruid, @NotNull RoomCreationResponse response, long startTime) {
         long processingDuration = System.currentTimeMillis() - startTime;
 
-        log.info("=== RoomService.createRoom() 완료 ===");
-        log.info("RUID: {}", ruid);
-        log.info("처리 시간: {}ms", processingDuration);
-        log.info("결과 성공 여부: {}", extractSuccessStatus(result));
-        log.info("결과 객체 크기: {} 필드", result != null ? result.size() : 0);
-        if (result != null) {
-            log.info("결과 필드들: {}", result.keySet());
+        if (response.isSuccess()) {
+            log.info("방 생성 완료 - ruid: {}, duration: {}ms, theme: {}, scripts: {}",
+                    ruid, processingDuration, response.getTheme(),
+                    response.getObjectScripts() != null ? response.getObjectScripts().size() : 0);
+        } else {
+            log.error("방 생성 실패 - ruid: {}, duration: {}ms, error: {}",
+                    ruid, processingDuration, response.getErrorMessage());
         }
-        log.info("===============================");
-    }
-
-    /**
-     * 결과에서 성공 여부를 추출합니다.
-     */
-    @NotNull
-    private String extractSuccessStatus(JsonObject result) {
-        if (result != null && result.has("success")) {
-            return String.valueOf(result.get("success").getAsBoolean());
-        }
-        return "unknown";
     }
 
     /**
      * 처리 성공을 처리합니다.
      */
-    private void handleProcessingSuccess(String ruid, JsonObject result) {
-        resultStore.storeFinalResult(ruid, result, JobResultStore.Status.COMPLETED);
+    private void handleProcessingSuccess(String ruid, RoomCreationResponse response) {
+        JsonObject resultJson = convertResponseToJson(response);
+        resultStore.storeFinalResult(ruid, resultJson, JobResultStore.Status.COMPLETED);
         int completedCount = completedRequests.incrementAndGet();
-        log.info("백그라운드 처리 성공. ruid: {}. 총 완료 건수: {}", ruid, completedCount);
+        log.info("처리 성공 - ruid: {}, completed: {}", ruid, completedCount);
+    }
+
+    /**
+     * RoomCreationResponse를 JsonObject로 변환합니다.
+     */
+    @NotNull
+    private JsonObject convertResponseToJson(@NotNull RoomCreationResponse response) {
+        JsonObject json = new JsonObject();
+
+        // 기본 필드
+        addBasicFields(json, response);
+
+        // 키워드 배열
+        addKeywordsIfPresent(json, response);
+
+        // 시나리오
+        addScenarioIfPresent(json, response);
+
+        // 스크립트들
+        if (response.isSuccess()) {
+            json.add("scripts", extractScripts(response));
+        }
+
+        // 모델 추적 정보
+        addModelTrackingIfPresent(json, response);
+
+        // 오류 메시지
+        addErrorMessageIfFailed(json, response);
+
+        return json;
+    }
+
+    /**
+     * JsonObject에 기본 필드들을 추가합니다.
+     */
+    private void addBasicFields(@NotNull JsonObject json, @NotNull RoomCreationResponse response) {
+        json.addProperty("uuid", response.getUuid());
+        json.addProperty("ruid", response.getPuid());
+        json.addProperty("theme", response.getTheme());
+        json.addProperty("difficulty", response.getDifficulty());
+        json.addProperty("success", response.isSuccess());
+        json.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
+    }
+
+    /**
+     * 키워드가 있으면 JsonObject에 추가합니다.
+     */
+    private void addKeywordsIfPresent(@NotNull JsonObject json, @NotNull RoomCreationResponse response) {
+        if (response.getKeywords() != null) {
+            json.add("keywords", gson.toJsonTree(response.getKeywords()));
+        }
+    }
+
+    /**
+     * 시나리오가 있으면 JsonObject에 추가합니다.
+     */
+    private void addScenarioIfPresent(@NotNull JsonObject json, @NotNull RoomCreationResponse response) {
+        if (response.getScenario() != null) {
+            json.add("scenario", response.getScenario());
+        }
+    }
+
+    /**
+     * 모델 추적 정보가 있으면 JsonObject에 추가합니다.
+     */
+    private void addModelTrackingIfPresent(@NotNull JsonObject json, @NotNull RoomCreationResponse response) {
+        if (response.getModelTracking() != null) {
+            json.add("model_tracking", response.getModelTracking());
+        }
+    }
+
+    /**
+     * 실패한 경우 에러 메시지를 JsonObject에 추가합니다.
+     */
+    private void addErrorMessageIfFailed(@NotNull JsonObject json, @NotNull RoomCreationResponse response) {
+        if (!response.isSuccess() && response.getErrorMessage() != null) {
+            json.addProperty("error", response.getErrorMessage());
+        }
+    }
+
+    /**
+     * RoomCreationResponse에서 스크립트들을 추출하여 JsonObject로 반환합니다.
+     */
+    @NotNull
+    private JsonObject extractScripts(@NotNull RoomCreationResponse response) {
+        JsonObject scripts = new JsonObject();
+
+        // GameManager 스크립트 추가
+        addGameManagerScript(scripts, response);
+
+        // 객체 스크립트들 추가
+        addObjectScripts(scripts, response);
+
+        return scripts;
+    }
+
+    /**
+     * GameManager 스크립트를 JsonObject에 추가합니다.
+     */
+    private void addGameManagerScript(@NotNull JsonObject scripts, @NotNull RoomCreationResponse response) {
+        String gameManagerScript = response.getGameManagerScript();
+        if (gameManagerScript != null && !gameManagerScript.isEmpty()) {
+            scripts.addProperty("GameManager.cs", gameManagerScript);
+        }
+    }
+
+    /**
+     * 객체 스크립트들을 JsonObject에 추가합니다.
+     */
+    private void addObjectScripts(@NotNull JsonObject scripts, @NotNull RoomCreationResponse response) {
+        if (response.getObjectScripts() == null) {
+            return;
+        }
+
+        for (String scriptEntry : response.getObjectScripts()) {
+            parseAndAddScriptEntry(scripts, scriptEntry);
+        }
+    }
+
+    /**
+     * 스크립트 엔트리를 파싱하여 JsonObject에 추가합니다.
+     */
+    private void parseAndAddScriptEntry(@NotNull JsonObject scripts, @NotNull String scriptEntry) {
+        int colonIndex = scriptEntry.indexOf(':');
+        if (colonIndex > 0) {
+            String fileName = scriptEntry.substring(0, colonIndex);
+            String content = scriptEntry.substring(colonIndex + 1);
+            scripts.addProperty(fileName, content);
+        } else {
+            log.warn("잘못된 스크립트 엔트리 형식: {}", scriptEntry);
+        }
     }
 
     /**
@@ -319,21 +429,18 @@ public class RoomRequestQueueManager implements QueueManager {
      */
     private void handleProcessingError(String ruid, String userUuid, Exception e) {
         logProcessingError(ruid, e);
-        JsonObject errorResponse = createErrorResponse(ruid, userUuid, e.getMessage());
-        resultStore.storeFinalResult(ruid, errorResponse, JobResultStore.Status.FAILED);
+
+        RoomCreationResponse errorResponse = createErrorResponse(ruid, userUuid, e.getMessage());
+        JsonObject errorJson = convertResponseToJson(errorResponse);
+
+        resultStore.storeFinalResult(ruid, errorJson, JobResultStore.Status.FAILED);
     }
 
     /**
      * 처리 오류를 로깅합니다.
      */
     private void logProcessingError(String ruid, @NotNull Exception e) {
-        long processingEndTime = System.currentTimeMillis();
-
-        log.error("=== 백그라운드 처리 중 오류 발생 ===");
-        log.error("RUID: {}", ruid);
-        log.error("오류 메시지: {}", e.getMessage());
-        log.error("오류 타입: {}", e.getClass().getName());
-        log.error("==========================", e);
+        log.error("처리 중 오류 발생 - ruid: {}, error: {}", ruid, e.getMessage(), e);
     }
 
     /**
@@ -341,20 +448,20 @@ public class RoomRequestQueueManager implements QueueManager {
      */
     private void finalizeProcessing(String ruid) {
         int remainingActive = activeRequests.decrementAndGet();
-        log.info("백그라운드 처리 종료. ruid: {}, 남은 활성 요청: {}", ruid, remainingActive);
+        log.debug("처리 종료 - ruid: {}, active: {}", ruid, remainingActive);
     }
 
     /**
      * 오류 응답을 생성합니다.
      */
     @NotNull
-    private JsonObject createErrorResponse(String ruid, String userUuid, String errorMessage) {
-        JsonObject errorResponse = new JsonObject();
-        errorResponse.addProperty("ruid", ruid);
-        errorResponse.addProperty("uuid", userUuid);
-        errorResponse.addProperty("success", false);
-        errorResponse.addProperty("error", errorMessage != null ? errorMessage : "An unknown error occurred during background processing.");
-        errorResponse.addProperty("timestamp", String.valueOf(System.currentTimeMillis()));
+    private RoomCreationResponse createErrorResponse(String ruid, String userUuid, String errorMessage) {
+        RoomCreationResponse errorResponse = new RoomCreationResponse();
+        errorResponse.setUuid(userUuid);
+        errorResponse.setPuid(ruid);
+        errorResponse.setSuccess(false);
+        errorResponse.setErrorMessage(errorMessage != null ? errorMessage : "An unknown error occurred during background processing.");
+
         return errorResponse;
     }
 }

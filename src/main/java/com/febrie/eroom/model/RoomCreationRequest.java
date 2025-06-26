@@ -17,15 +17,12 @@ public class RoomCreationRequest {
     private String[] keywords;
     private String difficulty;
 
-    // 새로 추가된 필드
     @SerializedName("existing_objects")
     private List<ExistingObject> existingObjects;
 
-    // 추가할 필드
     @SerializedName("is_free_modeling")
     private Boolean isFreeModeling;
 
-    // getter 메서드 추가
     public boolean isFreeModeling() {
         return isFreeModeling != null && isFreeModeling;
     }
@@ -51,7 +48,6 @@ public class RoomCreationRequest {
         };
     }
 
-    // existing_objects가 null인 경우 빈 리스트 반환
     public List<ExistingObject> getExistingObjectsSafe() {
         return existingObjects != null ? existingObjects : List.of();
     }
