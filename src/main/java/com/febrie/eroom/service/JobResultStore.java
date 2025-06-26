@@ -87,20 +87,4 @@ public class JobResultStore {
     public void deleteJob(String trackingId) {
         jobStore.remove(trackingId);
     }
-
-    /**
-     * 현재 저장된 작업 수를 반환합니다.
-     * 주로 테스트나 모니터링 목적으로 사용됩니다.
-     */
-    public int getJobCount() {
-        return jobStore.size();
-    }
-
-    /**
-     * 모든 작업을 삭제합니다.
-     * 주로 테스트 목적으로 사용됩니다.
-     */
-    public void clear() {
-        jobStore.clear();
-    }
 }
